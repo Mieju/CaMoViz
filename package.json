@@ -1,0 +1,21 @@
+{
+  "name": "cardiac-wave-viz",
+  "version": "1.0.0",
+  "description": "Browser-based cardiac wave propagation visualizer (Vite + Three.js + vtk.js)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "three": "^0.165.0"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}

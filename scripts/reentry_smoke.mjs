@@ -1,0 +1,35 @@
+// Headless smoke for the Reentry preset: load the example mesh, click Reentry,
+// and confirm the rotor renders and keeps animating with no console errors.
+// Usage: SMOKE_URL=http://localhost:4173/ node scripts/reentry_smoke.mjs
+import { chromium } from 'playwright';
+
+const URL = process.env.SMOKE_URL || 'http://localhost:4173/';
+const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader'] });
+const page = await browser.newPage({ viewport: { width: 1100, height: 760 } });
+const errors = [];
+page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('pageerror', (e) => errors.push(String(e)));
+
+await page.goto(URL, { waitUntil: 'networkidle' });
+await page.click('#example-btn');
+await page.waitForSelector('#overlay.hidden', { timeout: 60000, polling: 200 });
+await page.waitForTimeout(800);
+
+// Click the Reentry preset.
+await page.click('#p-preset-reentry');
+await page.waitForTimeout(500);
+
+// Screenshot the canvas twice, ~1.5 s apart: a live rotor must change pixels.
+const canvas = page.locator('#viewport canvas');
+const sum = (buf) => { let s = 0; for (let i = 0; i < buf.length; i += 101) s += buf[i]; return s; };
+const a = sum(await canvas.screenshot());
+await page.waitForTimeout(1500);
+const b = sum(await canvas.screenshot());
+
+await browser.close();
+
+console.log('console errors:', errors.length, errors.slice(0, 5));
+console.log('frame checksums:', a, b, 'changed:', a !== b);
+if (errors.length) { console.log('FAIL: console errors'); process.exit(1); }
+if (a === b) { console.log('FAIL: canvas not animating (rotor may have died or not rendered)'); process.exit(1); }
+console.log('REENTRY SMOKE OK — rotor renders and animates');

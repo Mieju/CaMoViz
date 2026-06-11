@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cardiac Wave Visualizer</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <!-- 3D canvas fills the viewport; mesh is the hero. -->
+  <div id="viewport"></div>
+
+  <!-- Landing overlay: drop zone + example fallback. Hidden once a mesh loads. -->
+  <div id="overlay" class="overlay">
+    <div id="dropzone" class="dropzone">
+      <h1>Cardiac Wave Visualizer</h1>
+      <p class="sub">Drag &amp; drop a <code>.vtu</code> / <code>.vtp</code> / <code>.vtk</code> surface mesh</p>
+      <button id="pick-btn" class="btn" type="button">Choose file…</button>
+      <div class="or">or</div>
+      <button id="example-btn" class="btn btn-ghost" type="button">Load example heart mesh</button>
+      <input id="file-input" type="file" accept=".vtu,.vtp,.vtk" hidden />
+    </div>
+  </div>
+
+  <!-- Loading + error toast. -->
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- Top-left controls shown once a mesh is loaded. -->
+  <div id="controls" class="controls" hidden>
+    <button id="reopen-btn" class="reopen" type="button">Load another mesh</button>
+    <button id="leads-toggle" class="reopen" type="button">Show ECG leads</button>
+    <div id="cam-card" class="cam-card">
+      <button id="cam-reset" class="cam-btn" type="button">⟲ Reset view</button>
+      <div class="cam-views">
+        <span class="cam-label">Saved views</span>
+        <div class="cam-slot">
+          <button class="cam-jump" data-slot="0" type="button" disabled>1</button>
+          <button class="cam-set" data-slot="0" type="button" title="Save current view">＋</button>
+        </div>
+        <div class="cam-slot">
+          <button class="cam-jump" data-slot="1" type="button" disabled>2</button>
+          <button class="cam-set" data-slot="1" type="button" title="Save current view">＋</button>
+        </div>
+        <div class="cam-slot">
+          <button class="cam-jump" data-slot="2" type="button" disabled>3</button>
+          <button class="cam-set" data-slot="2" type="button" title="Save current view">＋</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top-center playback transport: pause/resume + simulation speed. -->
+  <div id="transport" class="transport" hidden>
+    <button id="tp-play" class="tp-btn" type="button" aria-label="Pause" title="Pause / resume (Space)">⏸</button>
+    <div class="tp-speeds" role="group" aria-label="Simulation speed">
+      <button class="tp-speed" data-speed="0.25" type="button">0.25×</button>
+      <button class="tp-speed" data-speed="0.5" type="button">0.5×</button>
+      <button class="tp-speed active" data-speed="1" type="button">1×</button>
+      <button class="tp-speed" data-speed="2" type="button">2×</button>
+    </div>
+  </div>
+
+  <!-- Interaction hint. -->
+  <div id="hint" class="hint" hidden>Click the mesh to trigger a wave</div>
+
+  <!-- Bottom-left: orientation-axis legend toggle (eye). The gizmo itself is
+       drawn on the canvas just below this button. -->
+  <button id="axis-toggle" class="axis-toggle" type="button" hidden
+          aria-label="Toggle orientation axes" title="Show/hide orientation axes">
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path fill="currentColor" d="M12 6c-4.5 0-8.3 2.9-9.8 7 1.5 4.1 5.3 7 9.8 7s8.3-2.9 9.8-7C20.3 8.9 16.5 6 12 6zm0 11.5A4.5 4.5 0 1112 8.5a4.5 4.5 0 010 9zm0-2A2.5 2.5 0 1012 10.5a2.5 2.5 0 000 5z"/>
+    </svg>
+    <span class="axis-slash"></span>
+  </button>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

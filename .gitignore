@@ -1,0 +1,19 @@
+# Dependencies / build output
+node_modules
+dist
+.vite
+
+# Python venv for fixture generation
+.venv
+
+# Local-only test mesh (large; provide your own)
+block.vtu
+
+# Editor / OS / local agent config
+.DS_Store
+.vscode
+.claude
+*.local
+
+# Scratch screenshots from smoke scripts
+scripts/*.png
