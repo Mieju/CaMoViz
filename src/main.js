@@ -8,6 +8,9 @@ import { Dock, DOCK_ICONS } from './ui/Dock.js';
 import { loadFromArrayBuffer } from './mesh/VTKLoader.js';
 import { buildConductionGraph, applyOneWayGate } from './mesh/ConductionGraph.js';
 import { ExcitableMedium } from './wave/ExcitableMedium.js';
+import {
+  HEART_ANATOMICAL_MATRIX, meshBounds, transformTorso, torsoPlacement, electrodeSites,
+} from './mesh/TorsoFit.js';
 import { colormaps, regionRGB } from './wave/Colormap.js';
 
 const els = {
@@ -45,9 +48,13 @@ const SCAR_GRAY = [0.50, 0.50, 0.55];
 const REGION_DIM = [0.20, 0.22, 0.27];   // non-isolated regions when one is isolated
 
 // Bundled example meshes (preprocessed by scripts/preprocess_examples.py).
+// `anatomical` hearts are reoriented at load (HEART_ANATOMICAL_MATRIX, from
+// TorsoFit.js) into the scene frame (+x = patient left, +y = superior, +z =
+// anterior) so the normal view, the dipole, and the torso/electrode overlay all
+// share one physiological frame.
 const EXAMPLES = {
-  heart: { file: 'example_heart.vtu', ext: 'vtu', label: 'Heart (anatomy)', view: 'regions' },
-  vt: { file: 'example_heart_vt.vtu', ext: 'vtu', label: 'VT substrate', view: 'actionPotential' },
+  heart: { file: 'example_heart.vtu', ext: 'vtu', label: 'Heart (anatomy)', view: 'regions', anatomical: true },
+  vt: { file: 'example_heart_vt.vtu', ext: 'vtu', label: 'VT substrate', view: 'actionPotential', anatomical: true },
 };
 
 // One-way gate for the Reentry preset (validated by scripts/experiment_gate.mjs):
@@ -56,22 +63,14 @@ const EXAMPLES = {
 const GATE_RADIUS_FRAC = 0.15;    // gate disc radius as a fraction of mesh diameter
 const GATE_SIGN = 1;              // circulation sense the gate permits
 
-// Virtual torso electrodes for the pseudo-ECG, in the mesh frame with the
-// convention +x = patient left, +y = anterior, +z = superior. Limb electrodes
-// sit far out (arms/legs) in the coronal plane; precordials hug the anterior
-// chest, closer to the heart so they read more locally — as in a real 12-lead.
-const ECG_LIMB_R = 2.4;           // limb-electrode radius (× mesh radius)
-const ECG_PREC_R = 1.7;           // precordial radius (× mesh radius)
-const ECG_ELECTRODES = {
-  RA: { dir: [-1.0, 0.0, 0.55], r: ECG_LIMB_R },
-  LA: { dir: [1.0, 0.0, 0.55], r: ECG_LIMB_R },
-  LL: { dir: [0.2, 0.0, -1.0], r: ECG_LIMB_R },
-  V1: { dir: [-0.25, 1.0, 0.15], r: ECG_PREC_R },
-  V2: { dir: [0.2, 1.0, 0.1], r: ECG_PREC_R },
-  V3: { dir: [0.5, 1.0, 0.0], r: ECG_PREC_R },
-  V4: { dir: [0.75, 0.85, -0.1], r: ECG_PREC_R },
-  V5: { dir: [0.95, 0.5, -0.15], r: ECG_PREC_R },
-  V6: { dir: [1.05, 0.15, -0.2], r: ECG_PREC_R },
+// Virtual torso electrodes for the pseudo-ECG are positioned on the torso surface
+// by `electrodeSites` (TorsoFit.js), tied to the torso mesh — not the heart. When
+// no torso shell is loaded, fall back to a schematic shell around the heart using
+// these directions (scene frame: +x left, +y superior, +z anterior).
+const ECG_FALLBACK_DIRS = {
+  RA: [-1.0, 0.55, 0.1], LA: [1.0, 0.55, 0.1], LL: [0.45, -1.0, 0.1],
+  V1: [-0.25, 0.0, 1.0], V2: [0.2, -0.05, 1.0], V3: [0.5, -0.1, 1.0],
+  V4: [0.75, -0.15, 0.85], V5: [0.95, -0.2, 0.5], V6: [1.05, -0.2, 0.15],
 };
 // Lead = weighted sum of electrode potentials (Einthoven / Goldberger / Wilson).
 const ECG_LEADS = {
@@ -230,7 +229,7 @@ async function loadExample(key = 'heart') {
     const res = await fetch(ex.file);
     if (!res.ok) throw new Error(`example mesh not found (${res.status})`);
     panel.setColormapValue(ex.view);   // anatomy → Regions; VT → action-potential
-    await renderMesh(await res.arrayBuffer(), ex.ext, ex.file);
+    await renderMesh(await res.arrayBuffer(), ex.ext, ex.file, { anatomical: ex.anatomical });
     // First impression should be alive: auto-fire the Healthy scenario.
     applyPreset(BUILTIN_PRESETS[0]);
   } catch (err) {
@@ -238,7 +237,7 @@ async function loadExample(key = 'heart') {
   }
 }
 
-async function renderMesh(buffer, ext, name) {
+async function renderMesh(buffer, ext, name, opts = {}) {
   const result = await loadFromArrayBuffer(buffer, ext);
   const { geometry, flatShaded } = result;
   meshGeometry = geometry;
@@ -246,7 +245,7 @@ async function renderMesh(buffer, ext, name) {
   const verts = geometry.getAttribute('position').count;
   const tris = (geometry.getIndex()?.count ?? 0) / 3;
 
-  scene.setMesh(geometry, { flatShaded });
+  scene.setMesh(geometry, { flatShaded, anatomicalMatrix: opts.anatomical ? HEART_ANATOMICAL_MATRIX : null });
 
   vertexCount = verts;
   meshScale = (geometry.boundingSphere?.radius || 1) * 2;
@@ -462,20 +461,40 @@ function onFrame() {
   colorAttr.needsUpdate = true;
 }
 
-/** Resolve electrode world positions for the current mesh (heart centred at 0). */
+/**
+ * Size and place the torso shell around the heart (centred at 0), then seat the
+ * electrodes on the torso surface — so the leads are tied to the torso, not the
+ * heart. Falls back to a heart-radius shell if the torso mesh is unavailable.
+ */
 function setupElectrodes() {
   const R = meshScale / 2;       // mesh radius
   ecgElectrodes = {};
   ecgMaxR = R;
-  for (const name in ECG_ELECTRODES) {
-    const { dir, r } = ECG_ELECTRODES[name];
-    const l = Math.hypot(dir[0], dir[1], dir[2]) || 1;
-    const s = (r * R) / l;
-    const p = [dir[0] * s, dir[1] * s, dir[2] * s];
-    ecgElectrodes[name] = p;
+  let torsoTransform = null;
+
+  if (torsoGeometry && meshGeometry) {
+    const heartPos = meshGeometry.getAttribute('position').array;
+    const torsoPos = torsoGeometry.getAttribute('position').array;
+    const torsoIdx = torsoGeometry.getIndex().array;
+    const { scale, offset } = torsoPlacement(meshBounds(heartPos), meshBounds(torsoPos));
+    const torsoWorld = transformTorso(torsoPos, scale, offset);
+    ecgElectrodes = electrodeSites(torsoWorld, torsoIdx);
+    torsoTransform = { scale, offset };
+  } else {
+    // No torso shell: schematic electrode shell around the heart.
+    for (const name in ECG_FALLBACK_DIRS) {
+      const dir = ECG_FALLBACK_DIRS[name];
+      const l = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+      const s = 2.2 * R / l;
+      ecgElectrodes[name] = [dir[0] * s, dir[1] * s, dir[2] * s];
+    }
+  }
+
+  for (const name in ecgElectrodes) {
+    const p = ecgElectrodes[name];
     ecgMaxR = Math.max(ecgMaxR, Math.hypot(p[0], p[1], p[2]));
   }
-  scene.setLeadOverlay({ torsoGeometry, electrodes: ecgElectrodes, meshRadius: R });
+  scene.setLeadOverlay({ torsoGeometry, electrodes: ecgElectrodes, meshRadius: R, torsoTransform });
 }
 
 // Saved camera views (per mesh; coordinates are mesh-specific).
@@ -546,7 +565,7 @@ function ecgLead(leadName) {
   }
   phi.WCT = (phi.RA + phi.LA + phi.LL) / 3;   // Wilson central terminal
   const lead = ECG_LEADS[leadName] || ECG_LEADS.II;
-  return lead(phi) * meshScale * meshScale;   // undo the 1/r² scale for a sane range
+  return lead(phi) * ecgMaxR * ecgMaxR;       // undo the 1/r² falloff (electrode-distance scale)
 }
 
 /** Distinct integer region tags present in a region field (sorted). */

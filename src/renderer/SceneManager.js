@@ -87,6 +87,18 @@ export class SceneManager {
       this.mesh.material.dispose();
     }
 
+    // Reorient anatomically (bundled hearts) into the scene frame before
+    // recentering, so the normal view, the dipole, and the torso overlay agree.
+    if (opts.anatomicalMatrix) {
+      const m = opts.anatomicalMatrix;   // row-major 3×3
+      geometry.applyMatrix4(new THREE.Matrix4().set(
+        m[0], m[1], m[2], 0,
+        m[3], m[4], m[5], 0,
+        m[6], m[7], m[8], 0,
+        0, 0, 0, 1));
+      geometry.deleteAttribute('normal');   // recompute below for the new orientation
+    }
+
     if (!geometry.getAttribute('normal')) geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
@@ -203,28 +215,34 @@ export class SceneManager {
    * Build the ECG lead-overlay: a translucent torso outline, the virtual
    * electrodes (labelled spheres) and the Einthoven triangle (lead axes I/II/III),
    * so users can see where the leads run. Hidden until `showLeadOverlay(true)`.
-   * @param {{ electrodes: Record<string, number[]>, meshRadius: number }} opts
+   * @param {{ torsoGeometry?: THREE.BufferGeometry, electrodes: Record<string, number[]>,
+   *           meshRadius: number, torsoTransform?: { scale:number, offset:number[] } }} opts
    */
-  setLeadOverlay({ torsoGeometry, electrodes, meshRadius }) {
+  setLeadOverlay({ torsoGeometry, electrodes, meshRadius, torsoTransform }) {
     if (this.leadOverlay) { this.scene.remove(this.leadOverlay); this.leadOverlay = null; }
     const g = new THREE.Group();
     const V = (p) => new THREE.Vector3(p[0], p[1], p[2]);
 
-    // Torso shell: the real torso mesh (recentred + uniformly scaled to enclose
-    // the electrode shell) as a faint wireframe; fall back to a sphere if absent.
+    // Torso shell: the real torso mesh as a faint wireframe, placed with the SAME
+    // transform `setupElectrodes` used to seat the electrodes (TorsoFit.transformTorso):
+    // recenter on its bbox center, uniform scale, rotate −90° about X (native z-up →
+    // scene +y up), then offset. Falls back to an ellipsoid around the heart.
     const torsoMat = new THREE.MeshBasicMaterial({ color: 0x8aa0bd, wireframe: true, transparent: true, opacity: 0.14 });
     let torso;
-    if (torsoGeometry) {
+    if (torsoGeometry && torsoTransform) {
+      const { scale, offset } = torsoTransform;
       const geo = torsoGeometry.clone();
-      geo.computeBoundingSphere();
-      const bs = geo.boundingSphere;
-      geo.translate(-bs.center.x, -bs.center.y, -bs.center.z);
-      const scale = (meshRadius * 2.6) / (bs.radius || 1);   // a bit beyond the limb leads (2.4R)
+      geo.computeBoundingBox();
+      const bb = geo.boundingBox;
+      const cx = (bb.min.x + bb.max.x) / 2, cy = (bb.min.y + bb.max.y) / 2, cz = (bb.min.z + bb.max.z) / 2;
+      geo.translate(-cx, -cy, -cz);
       geo.scale(scale, scale, scale);
+      geo.rotateX(-Math.PI / 2);
+      geo.translate(offset[0], offset[1], offset[2]);
       torso = new THREE.Mesh(geo, torsoMat);
     } else {
       torso = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 18), torsoMat);
-      torso.scale.set(meshRadius * 1.9, meshRadius * 1.35, meshRadius * 2.3);
+      torso.scale.set(meshRadius * 2.2, meshRadius * 2.8, meshRadius * 1.8);
     }
     g.add(torso);
 
