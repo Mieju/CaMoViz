@@ -2,10 +2,13 @@ import { SceneManager } from './renderer/SceneManager.js';
 import { DropZone } from './ui/DropZone.js';
 import { Panel } from './ui/Panel.js';
 import { ECGMonitor } from './ui/ECGMonitor.js';
+import { HelpBar } from './ui/HelpBar.js';
+import { PresetsPanel } from './ui/PresetsPanel.js';
+import { Dock, DOCK_ICONS } from './ui/Dock.js';
 import { loadFromArrayBuffer } from './mesh/VTKLoader.js';
 import { buildConductionGraph, applyOneWayGate } from './mesh/ConductionGraph.js';
 import { ExcitableMedium } from './wave/ExcitableMedium.js';
-import { colormaps } from './wave/Colormap.js';
+import { colormaps, regionRGB } from './wave/Colormap.js';
 
 const els = {
   viewport: document.getElementById('viewport'),
@@ -16,17 +19,36 @@ const els = {
   exampleBtn: document.getElementById('example-btn'),
   controls: document.getElementById('controls'),
   reopenBtn: document.getElementById('reopen-btn'),
-  hint: document.getElementById('hint'),
+  meshInfo: document.getElementById('mesh-info'),
   toast: document.getElementById('toast'),
-  axisToggle: document.getElementById('axis-toggle'),
   transport: document.getElementById('transport'),
   tpPlay: document.getElementById('tp-play'),
   leadsToggle: document.getElementById('leads-toggle'),
+  camCard: document.getElementById('cam-card'),
   camReset: document.getElementById('cam-reset'),
 };
 
+// Standard, always-present scenarios. Custom presets the user saves are added at
+// runtime (PresetsPanel, persisted in localStorage). `gate` installs the
+// one-way reentry gate; `params` is a full Panel state snapshot.
+// Note: presets intentionally omit `colormap` — the display palette (incl. the
+// anatomical Regions view) is a separate display choice we don't want to clobber.
+const BUILTIN_PRESETS = [
+  { id: 'healthy', name: 'Healthy', builtin: true, gate: false,
+    params: { waveSpeed: 1.0, refractoryPeriod: 0.5, waveWidth: 0.08, s2Coupling: 0.3, loop: false } },
+  { id: 'reentry', name: 'Reentry', builtin: true, gate: true,
+    params: { waveSpeed: 1.0, refractoryPeriod: 0.45, waveWidth: 0.08, s2Coupling: 0.3, loop: false } },
+];
+
 const CROSS_TIME = 1.2;            // seconds for the front to cross the mesh at speed 1×
 const SCAR_GRAY = [0.50, 0.50, 0.55];
+const REGION_DIM = [0.20, 0.22, 0.27];   // non-isolated regions when one is isolated
+
+// Bundled example meshes (preprocessed by scripts/preprocess_examples.py).
+const EXAMPLES = {
+  heart: { file: 'example_heart.vtu', ext: 'vtu', label: 'Heart (anatomy)', view: 'regions' },
+  vt: { file: 'example_heart_vt.vtu', ext: 'vtu', label: 'VT substrate', view: 'actionPotential' },
+};
 
 // One-way gate for the Reentry preset (validated by scripts/experiment_gate.mjs):
 // a unidirectional conduction block in the scar channel turns a single S1 beat
@@ -68,6 +90,7 @@ let leadsOn = false;             // ECG lead overlay visible
 
 const scene = new SceneManager(els.viewport);
 const ecg = new ECGMonitor();
+const helpBar = new HelpBar();
 
 // Active mesh + simulation state.
 let meshGeometry = null;
@@ -78,7 +101,10 @@ let colorAttr = null, colorArray = null, baseColors = null;
 let medium = null;                 // ExcitableMedium (smooth excitable medium)
 let reentryActive = false;         // current graph has the one-way reentry gate
 let params = null;
-let colormap = colormaps.actionPotential;
+let colormap = colormaps.actionPotential;   // wave (active-phase) palette
+let regionView = false;                      // base coloured by anatomical region
+let regionTags = [];                         // distinct region tags in the mesh
+let isolatedRegion = null;                   // only this region kept coloured
 let lastSource = null;             // S1 stimulus origin (white marker)
 let s2Vertex = null;               // S2 site (cyan marker); defaults to S1 when unset
 let pickS2 = false;                // next mesh click sets S2 instead of S1
@@ -91,14 +117,81 @@ let nextPace = Infinity;
 let paused = false;
 let simSpeed = 1;                  // playback rate (0.25× slow-mo … 2× fast)
 
-const panel = new Panel({ onChange: onParams, onReset: resetWave, onTrigger: () => stimulate(lastSource), onS1S2: deliverS1S2, onPreset: onPreset, onPickS2: () => setPickS2(!pickS2) });
-panel.show(false);
+// Left dock: a thin icon rail + flyout, one home for every control panel. Each
+// section returns a body element we render a component (or relocate markup) into.
+const dock = new Dock();
+const meshBody = dock.addSection({ id: 'mesh', title: 'Mesh', icon: DOCK_ICONS.mesh });
+const scenarioBody = dock.addSection({ id: 'scenarios', title: 'Scenarios', icon: DOCK_ICONS.scenarios });
+const simBody = dock.addSection({ id: 'simulation', title: 'Simulation', icon: DOCK_ICONS.simulation });
+const viewBody = dock.addSection({ id: 'view', title: 'View', icon: DOCK_ICONS.view });
+
+const panel = new Panel({ mount: simBody, onChange: onParams, onReset: resetWave, onTrigger: () => stimulate(lastSource), onS1S2: deliverS1S2, onPickS2: () => setPickS2(!pickS2) });
 params = panel.state();
 
+const presets = new PresetsPanel({
+  mount: scenarioBody,
+  builtins: BUILTIN_PRESETS,
+  onApply: applyPreset,
+  getCurrent: () => ({ params: panel.state(), gate: reentryActive }),
+});
+
+// Mesh section: load button, live stats, and quick example switches.
+els.reopenBtn.className = 'dock-btn';
+meshBody.appendChild(els.reopenBtn);
+els.meshInfo = document.createElement('p');
+els.meshInfo.className = 'dock-note';
+meshBody.appendChild(els.meshInfo);
+const exGroup = dockGroup('Example meshes');
+for (const key of ['heart', 'vt']) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'dock-toggle';
+  b.textContent = EXAMPLES[key].label;
+  b.addEventListener('click', () => loadExample(key));
+  exGroup.appendChild(b);
+}
+meshBody.appendChild(exGroup);
+
+// View section: camera controls, then overlay toggles (relocated from the old
+// top-left stack so their existing handlers keep working).
+const camGroup = dockGroup('Camera');
+camGroup.appendChild(els.camCard);
+viewBody.appendChild(camGroup);
+
+const overlayGroup = dockGroup('Overlays');
+els.leadsToggle.className = 'dock-toggle';
+overlayGroup.appendChild(els.leadsToggle);
+els.axesToggle = document.createElement('button');
+els.axesToggle.type = 'button';
+els.axesToggle.className = 'dock-toggle active';
+els.axesToggle.textContent = 'Orientation axes';
+overlayGroup.appendChild(els.axesToggle);
+viewBody.appendChild(overlayGroup);
+
+function dockGroup(label) {
+  const g = document.createElement('div');
+  g.className = 'dock-group';
+  const l = document.createElement('div');
+  l.className = 'dock-group-label';
+  l.textContent = label;
+  g.appendChild(l);
+  return g;
+}
+
 new DropZone({ dropEl: els.dropzone, inputEl: els.fileInput, pickBtn: els.pickBtn, onFile: handleFile });
-els.exampleBtn.addEventListener('click', loadExample);
+els.exampleBtn.addEventListener('click', () => loadExample('heart'));
 els.reopenBtn.addEventListener('click', () => setOverlay(true));
-els.axisToggle.addEventListener('click', toggleAxisGizmo);
+
+// Preload the torso shell (small) once; the ECG lead overlay renders it as a
+// wireframe scaled around the heart.
+let torsoGeometry = null;
+const torsoReady = (async () => {
+  try {
+    const res = await fetch('example_torso.vtu');
+    if (res.ok) torsoGeometry = (await loadFromArrayBuffer(await res.arrayBuffer(), 'vtu')).geometry;
+  } catch { /* overlay falls back to a procedural shell */ }
+})();
+els.axesToggle.addEventListener('click', toggleAxisGizmo);
 els.tpPlay.addEventListener('click', (e) => { setPaused(!paused); e.currentTarget.blur(); });
 els.leadsToggle.addEventListener('click', toggleLeads);
 els.camReset.addEventListener('click', () => scene.resetView());
@@ -130,14 +223,18 @@ async function handleFile(file) {
   }
 }
 
-async function loadExample() {
-  toast('Loading example heart mesh…');
+async function loadExample(key = 'heart') {
+  const ex = EXAMPLES[key] || EXAMPLES.heart;
+  toast(`Loading ${ex.label}…`);
   try {
-    const res = await fetch('example_mesh.vtu');
+    const res = await fetch(ex.file);
     if (!res.ok) throw new Error(`example mesh not found (${res.status})`);
-    await renderMesh(await res.arrayBuffer(), 'vtu', 'example_mesh.vtu');
+    panel.setColormapValue(ex.view);   // anatomy → Regions; VT → action-potential
+    await renderMesh(await res.arrayBuffer(), ex.ext, ex.file);
+    // First impression should be alive: auto-fire the Healthy scenario.
+    applyPreset(BUILTIN_PRESETS[0]);
   } catch (err) {
-    fail(err, 'example_mesh.vtu');
+    fail(err, ex.file);
   }
 }
 
@@ -157,10 +254,14 @@ async function renderMesh(buffer, ext, name) {
   colorArray = colorAttr.array;
   baseColors = new Float32Array(colorArray.length);
 
+  regionTags = distinctRegions(pointData.region);
+  isolatedRegion = null;
   params = panel.state();
-  colormap = colormaps[params.colormap] || colormaps.actionPotential;
+  applyColormapState(params.colormap);
+  refreshColorKey();
 
   rebuildMedium();        // plain substrate (no reentry gate) for a fresh mesh
+  await torsoReady;       // ensure the torso shell is ready for the lead overlay
   setupElectrodes();      // virtual torso electrodes at this mesh's scale
   buildBase();
   applyResting();
@@ -185,10 +286,10 @@ async function renderMesh(buffer, ext, name) {
   els.leadsToggle.classList.remove('active');
   clearViews();
 
+  const stats = `${name} — ${verts.toLocaleString()} vertices, ${tris.toLocaleString()} triangles`;
+  els.meshInfo.textContent = stats;
   setOverlay(false);
-  panel.show(true);
-  els.hint.hidden = false;
-  toast(`${name} — ${verts.toLocaleString()} vertices, ${tris.toLocaleString()} triangles`, false, 2600);
+  toast(stats, false, 2600);
 }
 
 // --- simulation -------------------------------------------------------------
@@ -293,7 +394,6 @@ function setPickS2(on) {
 function stimulate(vertex) {
   if (vertex == null || !medium) return;
   scene.markOrigin(vertex);
-  els.hint.hidden = true;
   medium.stimulate(vertex, simTime);
 }
 
@@ -375,7 +475,7 @@ function setupElectrodes() {
     ecgElectrodes[name] = p;
     ecgMaxR = Math.max(ecgMaxR, Math.hypot(p[0], p[1], p[2]));
   }
-  scene.setLeadOverlay({ electrodes: ecgElectrodes, meshRadius: R });
+  scene.setLeadOverlay({ torsoGeometry, electrodes: ecgElectrodes, meshRadius: R });
 }
 
 // Saved camera views (per mesh; coordinates are mesh-specific).
@@ -449,10 +549,49 @@ function ecgLead(leadName) {
   return lead(phi) * meshScale * meshScale;   // undo the 1/r² scale for a sane range
 }
 
-/** Recompute resting base colors: flat resting tissue + a gray scar overlay. */
+/** Distinct integer region tags present in a region field (sorted). */
+function distinctRegions(field) {
+  if (!field) return [];
+  const set = new Set();
+  for (let v = 0; v < field.length; v++) set.add(field[v] | 0);
+  return [...set].sort((a, b) => a - b);
+}
+
+/** Resolve the wave palette + region-view flag from the colormap selector value. */
+function applyColormapState(value) {
+  regionView = value === 'regions';
+  if (!regionView) isolatedRegion = null;
+  colormap = regionView ? colormaps.actionPotential : (colormaps[value] || colormaps.actionPotential);
+}
+
+/** Show the gradient key, or the region legend when in Regions view. */
+function refreshColorKey() {
+  if (regionView && regionTags.length) panel.setRegionKey(regionTags, isolateRegion, isolatedRegion);
+  else panel.setColorKey(colormap, !!pointData.fibrosis);
+}
+
+/** Isolate (or clear) a single anatomical region in the Regions view. */
+function isolateRegion(tag) {
+  isolatedRegion = tag;
+  buildBase();
+  applyResting();
+  panel.setRegionKey(regionTags, isolateRegion, isolatedRegion);
+}
+
+/** Recompute resting base colors: resting tissue / region colours + scar overlay. */
 function buildBase() {
   if (!baseColors) return;
-  for (let v = 0; v < vertexCount; v++) colormap(0, baseColors, 3 * v); // resting
+  const region = regionView ? pointData.region : null;
+  if (region) {
+    for (let v = 0; v < vertexCount; v++) {
+      const off = 3 * v;
+      const rgb = (isolatedRegion != null && (region[v] | 0) !== isolatedRegion)
+        ? REGION_DIM : regionRGB(region[v]);
+      baseColors[off] = rgb[0]; baseColors[off + 1] = rgb[1]; baseColors[off + 2] = rgb[2];
+    }
+  } else {
+    for (let v = 0; v < vertexCount; v++) colormap(0, baseColors, 3 * v); // resting
+  }
 
   // Tint fibrotic tissue gray so the conduction obstacle is always visible.
   const fib = pointData.fibrosis || null;
@@ -478,7 +617,8 @@ function applyResting() {
 function onParams(state) {
   const prev = params;
   params = state;
-  colormap = colormaps[state.colormap] || colormaps.actionPotential;
+  applyColormapState(state.colormap);
+  refreshColorKey();
 
   // Speed / refractory / wave-width update the medium in place (no graph rebuild,
   // so a running reentry circuit keeps its one-way gate).
@@ -492,13 +632,18 @@ function onParams(state) {
 }
 
 /**
- * A preset just loaded a param set (Panel.applyPreset already wrote the sliders).
- * Healthy → plain substrate, fire a clean wave from the pacing site. Reentry →
- * install the one-way gate and fire a single S1 beat at the channel entrance; the
- * wave dies one way at the gate and circulates the other way around the scar — a
- * genuine, emergent anatomical reentry (no seeded spiral).
+ * Apply a preset (built-in or custom) from the Presets window. Writes its saved
+ * controls into the panel, then sets up the scenario: `gate:true` installs the
+ * one-way reentry gate and fires a single S1 at the channel entrance (a single
+ * beat then circulates the scar into a self-sustaining, emergent reentry);
+ * otherwise it builds a plain substrate and fires a clean wave from the pacing
+ * site. Stimulus sites come from the mesh's markers, so a preset is
+ * mesh-independent (no baked-in vertex indices).
  */
-function onPreset(name) {
+function applyPreset(preset) {
+  if (!preset || !medium) return;
+  if (preset.params) panel.setState(preset.params);   // writes sliders + fires onParams
+
   simTime = 0;
   lastFrame = performance.now();
   nextPace = Infinity;
@@ -508,9 +653,9 @@ function onPreset(name) {
   setPickS2(false);
   panel.setS2Status('S2: same as S1');
 
-  if (name === 'reentry') {
+  if (preset.gate) {
     if (!pointData.fibrosis) {
-      toast('Reentry preset needs a fibrosis field — load the example heart mesh.', true, 4000);
+      toast(`"${preset.name}" needs a fibrosis field — load the example heart mesh.`, true, 4000);
       return;
     }
     rebuildMedium({ gate: true });
@@ -521,31 +666,40 @@ function onPreset(name) {
     if (s1 != null) {
       panel.setCanTrigger(true);
       stimulate(s1);
-      toast('Reentry preset — one beat at the channel entrance; the one-way gate forces the wave to circulate the scar into a self-sustaining reentry.', false, 6000);
+      toast(`${preset.name} — one beat at the channel entrance; the one-way gate forces the wave to circulate the scar into a self-sustaining reentry.`, false, 6000);
     }
     return;
   }
 
-  // Healthy: plain substrate (no gate), clean wave from the pacing site.
+  // Plain substrate (no gate), clean wave from the pacing site (or the mesh apex
+  // when there's no marker, so even a marker-less anatomy mesh loads alive).
   rebuildMedium({ gate: false });
   buildBase();
   applyResting();
-  const s1 = markerVertex('pace_site') ?? lastSource;
+  const s1 = markerVertex('pace_site') ?? lastSource ?? apexVertex();
   lastSource = s1;
   if (s1 != null) {
     panel.setCanTrigger(true);
     stimulate(s1);
-    toast('Healthy preset — a clean single wave spreads from the pacing site.', false, 4000);
+    toast(`${preset.name} — a clean single wave spreads from the pacing site.`, false, 4000);
   } else {
-    toast('Healthy preset — click the mesh to fire a clean single wave.', false, 4000);
+    toast(`${preset.name} — click the mesh to fire a clean single wave.`, false, 4000);
   }
+}
+
+/** Fallback stimulus site: the mesh's lowest point (≈ apex), for marker-less meshes. */
+function apexVertex() {
+  const p = meshGeometry?.getAttribute('position');
+  if (!p) return null;
+  let best = 0, lo = Infinity;
+  for (let v = 0; v < p.count; v++) { const y = p.getY(v); if (y < lo) { lo = y; best = v; } }
+  return best;
 }
 
 function resetWave() {
   if (medium) medium.reset();
   pendingS2 = null;
   applyResting();
-  els.hint.hidden = false;
   nextPace = params.loop && lastSource != null ? simTime : Infinity;
 }
 
@@ -553,20 +707,17 @@ function resetWave() {
 
 function setOverlay(visible) {
   els.overlay.classList.toggle('hidden', !visible);
-  els.controls.hidden = visible;
-  els.axisToggle.hidden = visible;     // orientation gizmo toggle shows with the mesh
+  dock.show(!visible);
   els.transport.hidden = visible;
-  panel.show(!visible);
   ecg.show(!visible);
-  if (visible) els.hint.hidden = true;
+  helpBar.show(!visible);
 }
 
 let axisOn = true;
 function toggleAxisGizmo() {
   axisOn = !axisOn;
   scene.setAxisGizmoVisible(axisOn);
-  els.axisToggle.classList.toggle('off', !axisOn);
-  els.axisToggle.setAttribute('aria-pressed', String(axisOn));
+  els.axesToggle.classList.toggle('active', axisOn);
 }
 
 function setPaused(p) {

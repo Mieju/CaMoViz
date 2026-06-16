@@ -17,3 +17,4 @@ block.vtu
 
 # Scratch screenshots from smoke scripts
 scripts/*.png
+data/

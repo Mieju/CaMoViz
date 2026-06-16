@@ -28,7 +28,12 @@ html, body {
   width: 100vw;
   height: 100vh;
 }
-#viewport canvas { display: block; }
+#viewport canvas {
+  display: block;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;   /* no native image-drag ghost on orbit */
+}
 
 /* Landing overlay. */
 .overlay {
@@ -111,7 +116,7 @@ html, body {
 /* Toast for loading / errors. */
 .toast {
   position: fixed;
-  bottom: 24px;
+  bottom: 60px;            /* clears the bottom-centre interaction help bar */
   left: 50%;
   transform: translateX(-50%);
   padding: 10px 18px;
@@ -128,42 +133,131 @@ html, body {
   color: #ff8b87;
 }
 
-/* Top-left control stack shown once a mesh is loaded. */
-.controls {
+/* ---- Left dock: icon rail + flyout drawer (one home for all control panels) ---- */
+.dock {
   position: fixed;
   top: 16px;
   left: 16px;
   z-index: 15;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
   align-items: flex-start;
+  gap: 8px;
 }
-.reopen {
-  appearance: none;
-  border: 1px solid var(--border);
+.dock-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
   background: var(--bg-panel);
-  backdrop-filter: blur(6px);
-  color: var(--fg);
-  font: inherit;
-  font-size: 0.85rem;
-  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+}
+.dock-icon {
+  appearance: none;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
-.reopen:hover { border-color: var(--fg-dim); }
-.reopen.active { border-color: #ffd166; color: #ffd166; }
+.dock-icon:hover { color: var(--fg); background: rgba(255, 255, 255, 0.05); }
+.dock-icon.active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
 
-/* Camera views card. */
+.dock-flyout {
+  width: 256px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+}
+.dock-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.dock-close {
+  appearance: none;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 2px;
+}
+.dock-close:hover { color: var(--fg); }
+.dock-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 12px;
+  font-size: 0.85rem;
+  max-height: calc(100vh - 32px - 44px);   /* viewport − margins − section header */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.dock-section-body::-webkit-scrollbar { width: 8px; }
+.dock-section-body::-webkit-scrollbar-track { background: transparent; }
+.dock-section-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.dock-section-body::-webkit-scrollbar-thumb:hover { background: var(--fg-dim); }
+
+/* Generic dock controls. */
+.dock-btn {
+  appearance: none;
+  padding: 9px 12px;
+  background: var(--accent);
+  color: #1a1109;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.dock-btn:hover { filter: brightness(1.08); }
+.dock-toggle {
+  appearance: none;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.dock-toggle:hover { border-color: var(--fg-dim); }
+.dock-toggle.active { border-color: var(--accent); color: var(--accent); }
+.dock-note { margin: 0; color: var(--fg-dim); font-size: 0.78rem; line-height: 1.4; }
+.dock-group { display: flex; flex-direction: column; gap: 8px; }
+.dock-group-label {
+  color: var(--fg-dim);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Camera card (now inside the View dock section — no floating chrome). */
 .cam-card {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  backdrop-filter: blur(6px);
 }
 .cam-btn {
   appearance: none;
@@ -206,75 +300,17 @@ html, body {
   cursor: pointer;
 }
 .cam-set:hover { color: var(--fg); border-color: var(--fg-dim); }
-.reopen:hover { border-color: var(--fg-dim); }
-
-/* Control panel (right side). */
-.panel {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 15;
-  width: 250px;
-  background: var(--bg-panel);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 0.85rem;
-  overflow: hidden;
-}
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-.panel-title { font-weight: 600; }
-.panel-toggle {
-  appearance: none;
-  background: none;
-  border: none;
-  color: var(--fg-dim);
-  cursor: pointer;
-  font-size: 0.9rem;
-  transform: rotate(90deg);
-  transition: transform 0.2s ease;
-}
-.panel.collapsed .panel-toggle { transform: rotate(0deg); }
-.panel-body {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 14px 12px;
-  transition: opacity 0.2s ease;
-  /* Cap to the viewport and scroll when the controls outgrow it. */
-  max-height: calc(100vh - 16px - 16px - 44px); /* viewport − top/bottom margins − header */
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
-}
-.panel-body::-webkit-scrollbar { width: 8px; }
-.panel-body::-webkit-scrollbar-track { background: transparent; }
-.panel-body::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
-}
-.panel-body::-webkit-scrollbar-thumb:hover { background: var(--fg-dim); }
-.panel.collapsed .panel-body {
-  display: none;
-}
 
 .row { display: flex; flex-direction: column; gap: 6px; }
 .row-inline { flex-direction: row; align-items: center; gap: 8px; }
 .row-label { color: var(--fg-dim); display: flex; justify-content: space-between; }
 .row-label em { color: var(--accent); font-style: normal; font-variant-numeric: tabular-nums; }
 
-.panel input[type="range"] {
+.dock-section-body input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
 }
-.panel select {
+.dock-section-body select {
   width: 100%;
   padding: 6px 8px;
   background: #0d111799;
@@ -283,8 +319,8 @@ html, body {
   border-radius: 6px;
   font: inherit;
 }
-.panel select:disabled { opacity: 0.5; }
-.panel input[type="checkbox"] { accent-color: var(--accent); }
+.dock-section-body select:disabled { opacity: 0.5; }
+.dock-section-body input[type="checkbox"] { accent-color: var(--accent); }
 
 .panel-trigger {
   appearance: none;
@@ -306,32 +342,6 @@ html, body {
   font-size: 0.78rem;
   line-height: 1.3;
 }
-
-/* Preset row. */
-.presets {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.presets-label {
-  color: var(--fg-dim);
-  font-size: 0.78rem;
-  margin-right: 2px;
-}
-.presets button {
-  appearance: none;
-  flex: 1;
-  padding: 7px 8px;
-  background: transparent;
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font: inherit;
-  font-size: 0.85rem;
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-.presets button:hover { border-color: var(--accent); background: rgba(255, 255, 255, 0.05); }
 
 /* S1–S2 protocol group. */
 .s1s2 {
@@ -398,16 +408,106 @@ html, body {
 }
 .panel-reset:hover { border-color: var(--fg-dim); }
 
-/* Hint chip bottom-right. */
-.hint {
-  position: fixed;
-  bottom: 16px;
-  right: 16px;
-  z-index: 5;
+/* Colour key, under the Colormap selector in the Controls panel. */
+.colorkey { display: flex; flex-direction: column; gap: 5px; margin-top: -4px; }
+.colorkey-bar {
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: #333;
+}
+.colorkey-labels {
+  display: flex;
+  justify-content: space-between;
   color: var(--fg-dim);
-  font-size: 0.8rem;
-  pointer-events: none;
+  font-size: 0.72rem;
+}
+.colorkey-note { margin: 2px 0 0; color: var(--fg-dim); font-size: 0.74rem; line-height: 1.35; }
+.colorkey-note em { color: var(--accent); font-style: normal; }
+.colorkey-scar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 0.74rem;
+}
+.ck-swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: rgb(128, 128, 140);
+  border: 1px solid var(--border);
+}
+
+/* Region legend (Regions view): clickable swatch rows, capped + scrollable. */
+.colorkey-regions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 168px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.region-row {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 0.76rem;
+  text-align: left;
+  cursor: pointer;
+}
+.region-row:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
+.region-row.active { color: var(--fg); border-color: var(--accent); }
+.region-sw {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+/* Persistent interaction cheat-sheet, bottom-centre. */
+.helpbar {
+  position: fixed;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 14px;
+  padding: 6px 14px;
+  max-width: 92vw;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  backdrop-filter: blur(8px);
+  color: var(--fg-dim);
+  font-size: 0.74rem;
   user-select: none;
+}
+.helpbar span { white-space: nowrap; }
+.helpbar kbd {
+  display: inline-block;
+  padding: 0 5px;
+  margin-right: 4px;
+  background: #0d111799;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.7rem;
+  color: var(--fg);
 }
 
 /* Top-center playback transport. */
@@ -458,21 +558,33 @@ html, body {
 .tp-speed:hover { color: var(--fg); }
 .tp-speed.active { color: var(--accent); border-color: var(--border); background: rgba(255,255,255,0.04); }
 
-/* Floating pseudo-ECG monitor (left side, draggable). */
+/* Floating pseudo-ECG monitor (bottom-right by default, draggable). The left
+   side now belongs to the dock, so the live ECG readout sits opposite it. */
 .ecg-window {
   position: fixed;
-  left: 16px;
-  top: 42%;
+  right: 16px;
+  bottom: 16px;
   z-index: 8;
   width: 240px;
+  height: 176px;
+  min-width: 200px;
+  min-height: 120px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: 8px;
   backdrop-filter: blur(8px);
   overflow: hidden;
+  resize: both;            /* drag the bottom-right corner to resize */
   user-select: none;
 }
+/* Collapse to just the title bar when minimized (override any dragged height). */
+.ecg-window.min { height: auto !important; min-height: 0; resize: none; }
 .ecg-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -492,10 +604,11 @@ html, body {
   padding: 0 4px;
 }
 .ecg-min:hover { color: var(--fg); }
-.ecg-body { padding: 6px; }
-.ecg-canvas { display: block; width: 240px; height: 88px; }
+.ecg-body { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 6px; }
+.ecg-canvas { display: block; flex: 1; min-height: 60px; width: 100%; }
 .ecg-window.min .ecg-body { display: none; }
 .ecg-leads {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
@@ -518,35 +631,68 @@ html, body {
 .ecg-lead:hover { color: var(--fg); }
 .ecg-lead.active { color: #1a1109; background: #ff9d4d; border-color: #ff9d4d; }
 
-/* Orientation-axis legend toggle (bottom-left, just above the canvas gizmo). */
-.axis-toggle {
-  position: fixed;
-  left: 16px;
-  bottom: 208px;          /* sits above the 184px gizmo at 16px margin */
-  z-index: 6;
+/* Presets / scenarios (rendered into the Scenarios dock section). */
+.pw-list { display: flex; flex-direction: column; gap: 4px; }
+.pw-section {
+  color: var(--fg-dim);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin: 4px 0 1px;
+}
+.pw-empty { color: var(--fg-dim); font-size: 0.74rem; line-height: 1.35; padding: 0 1px 2px; }
+.pw-row { display: flex; gap: 4px; }
+.pw-apply {
+  appearance: none;
+  flex: 1;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  color: var(--fg-dim);
-  background: var(--bg-panel);
+  gap: 6px;
+  padding: 7px 9px;
+  background: transparent;
+  color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
   cursor: pointer;
-  backdrop-filter: blur(8px);
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
-.axis-toggle:hover { color: var(--fg); border-color: var(--fg-dim); }
-.axis-toggle .axis-slash {
-  position: absolute;
-  width: 20px;
-  height: 2px;
-  background: currentColor;
-  transform: rotate(-45deg);
-  border-radius: 2px;
-  opacity: 0;                /* shown only when axes are off */
+.pw-apply:hover { border-color: var(--accent); background: rgba(255, 255, 255, 0.05); }
+.pw-tag {
+  margin-left: auto;
+  padding: 0 5px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #1a1109;
+  background: var(--accent);
+  border-radius: 3px;
 }
-.axis-toggle.off { color: var(--border); }
-.axis-toggle.off .axis-slash { opacity: 1; }
+.pw-del {
+  appearance: none;
+  width: 28px;
+  flex: none;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.pw-del:hover { color: #ff8b87; border-color: #f8514955; }
+.pw-save {
+  appearance: none;
+  padding: 8px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.pw-save:hover { border-color: var(--accent); color: var(--accent); }

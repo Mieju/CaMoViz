@@ -221,7 +221,10 @@ def write_uint64_uncompressed_tets(path):
 
 
 def main():
-    example_path = os.path.join(ROOT, "public", "example_mesh.vtu")
+    # The shipped examples are now the real heart/torso (see preprocess_examples.py).
+    # This synthetic prolate-spheroid VT substrate is kept only as a reentry-physics
+    # test fixture (the Reentry unit test parses it as ASCII).
+    example_path = os.path.join(ROOT, "tests", "fixtures", "example_substrate.vtu")
     cube_path = os.path.join(ROOT, "tests", "fixtures", "cube.vtu")
     os.makedirs(os.path.dirname(example_path), exist_ok=True)
     os.makedirs(os.path.dirname(cube_path), exist_ok=True)

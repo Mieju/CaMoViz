@@ -15,8 +15,15 @@ await page.click('#example-btn');
 await page.waitForSelector('#overlay.hidden', { timeout: 60000, polling: 200 });
 await page.waitForTimeout(800);
 
-// Click the Reentry preset.
-await page.click('#p-preset-reentry');
+// Switch to the VT-substrate example (the anatomy heart has no scar field).
+await page.click('.dock-icon[aria-label="Mesh"]');
+await page.click('.dock-section-body >> text=VT substrate');
+await page.waitForTimeout(800);
+
+// Open the dock's Scenarios section and apply the Reentry scenario.
+await page.click('.dock-icon[aria-label="Scenarios"]');
+await page.waitForSelector('.pw-apply', { timeout: 5000 });
+await page.click('.pw-apply >> text=Reentry');
 await page.waitForTimeout(500);
 
 // Screenshot the canvas twice, ~1.5 s apart: a live rotor must change pixels.

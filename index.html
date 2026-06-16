@@ -25,10 +25,12 @@
   <!-- Loading + error toast. -->
   <div id="toast" class="toast" hidden></div>
 
-  <!-- Top-left controls shown once a mesh is loaded. -->
+  <!-- Controls relocated into the left dock at startup (see main.js). This holder
+       stays hidden; its children are moved into dock sections so their existing
+       handlers keep working. -->
   <div id="controls" class="controls" hidden>
-    <button id="reopen-btn" class="reopen" type="button">Load another mesh</button>
-    <button id="leads-toggle" class="reopen" type="button">Show ECG leads</button>
+    <button id="reopen-btn" type="button">Load another mesh</button>
+    <button id="leads-toggle" type="button">Show ECG leads</button>
     <div id="cam-card" class="cam-card">
       <button id="cam-reset" class="cam-btn" type="button">⟲ Reset view</button>
       <div class="cam-views">
@@ -59,19 +61,6 @@
       <button class="tp-speed" data-speed="2" type="button">2×</button>
     </div>
   </div>
-
-  <!-- Interaction hint. -->
-  <div id="hint" class="hint" hidden>Click the mesh to trigger a wave</div>
-
-  <!-- Bottom-left: orientation-axis legend toggle (eye). The gizmo itself is
-       drawn on the canvas just below this button. -->
-  <button id="axis-toggle" class="axis-toggle" type="button" hidden
-          aria-label="Toggle orientation axes" title="Show/hide orientation axes">
-    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-      <path fill="currentColor" d="M12 6c-4.5 0-8.3 2.9-9.8 7 1.5 4.1 5.3 7 9.8 7s8.3-2.9 9.8-7C20.3 8.9 16.5 6 12 6zm0 11.5A4.5 4.5 0 1112 8.5a4.5 4.5 0 010 9zm0-2A2.5 2.5 0 1012 10.5a2.5 2.5 0 000 5z"/>
-    </svg>
-    <span class="axis-slash"></span>
-  </button>
 
   <script type="module" src="/src/main.js"></script>
 </body>

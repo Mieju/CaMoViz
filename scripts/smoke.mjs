@@ -26,9 +26,18 @@ await page.screenshot({ path: OUT });
 // back blank even though the page composites the mesh — see the saved PNG.)
 const state = await page.evaluate(() => {
   const c = document.querySelector('#viewport canvas');
+  const helpBar = document.querySelector('.helpbar');
+  const dock = document.querySelector('.dock');
+  // Anatomy example loads in Regions view → the region legend should be populated.
+  const regions = document.querySelectorAll('#p-colorkey-regions .region-row').length;
   return {
     canvasW: c?.width || 0,
     overlayHidden: document.getElementById('overlay').classList.contains('hidden'),
+    // The left dock (icon rail + flyout) is shown once a mesh is loaded.
+    dockShown: !!dock && !dock.hidden,
+    // Interaction help bar is shown once a mesh is loaded.
+    helpShown: !!helpBar && !helpBar.hidden,
+    regionRows: regions,
     toast: document.getElementById('toast').textContent,
   };
 });
@@ -37,9 +46,11 @@ await browser.close();
 
 console.log(`console errors: ${errors.length}`, errors.slice(0, 5));
 console.log(`canvas width: ${state.canvasW}, overlay hidden: ${state.overlayHidden}`);
+console.log(`dock shown: ${state.dockShown}, help shown: ${state.helpShown}, region rows: ${state.regionRows}`);
 console.log(`toast: "${state.toast}"`);
 console.log(`screenshot: ${OUT}`);
 
-const ok = !errors.length && state.canvasW > 0 && state.overlayHidden && /vertices/.test(state.toast);
+const ok = !errors.length && state.canvasW > 0 && state.overlayHidden
+  && state.dockShown && state.helpShown && state.regionRows > 0;
 if (!ok) { console.error('FAIL: pipeline did not complete cleanly'); process.exit(1); }
 console.log('SMOKE OK');

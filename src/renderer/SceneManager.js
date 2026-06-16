@@ -23,6 +23,10 @@ export class SceneManager {
     this.renderer.setSize(w, h);
     container.appendChild(this.renderer.domElement);
 
+    // Stop the browser starting a native image-drag of the canvas on a left-drag
+    // (it would "drag a stale image" of the frame instead of orbiting).
+    this.renderer.domElement.addEventListener('dragstart', (e) => e.preventDefault());
+
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
@@ -201,17 +205,27 @@ export class SceneManager {
    * so users can see where the leads run. Hidden until `showLeadOverlay(true)`.
    * @param {{ electrodes: Record<string, number[]>, meshRadius: number }} opts
    */
-  setLeadOverlay({ electrodes, meshRadius }) {
+  setLeadOverlay({ torsoGeometry, electrodes, meshRadius }) {
     if (this.leadOverlay) { this.scene.remove(this.leadOverlay); this.leadOverlay = null; }
     const g = new THREE.Group();
     const V = (p) => new THREE.Vector3(p[0], p[1], p[2]);
 
-    // Torso: wider than deep, taller than wide (chest), faint wireframe.
-    const torso = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 28, 18),
-      new THREE.MeshBasicMaterial({ color: 0x8aa0bd, wireframe: true, transparent: true, opacity: 0.16 })
-    );
-    torso.scale.set(meshRadius * 1.9, meshRadius * 1.35, meshRadius * 2.3);
+    // Torso shell: the real torso mesh (recentred + uniformly scaled to enclose
+    // the electrode shell) as a faint wireframe; fall back to a sphere if absent.
+    const torsoMat = new THREE.MeshBasicMaterial({ color: 0x8aa0bd, wireframe: true, transparent: true, opacity: 0.14 });
+    let torso;
+    if (torsoGeometry) {
+      const geo = torsoGeometry.clone();
+      geo.computeBoundingSphere();
+      const bs = geo.boundingSphere;
+      geo.translate(-bs.center.x, -bs.center.y, -bs.center.z);
+      const scale = (meshRadius * 2.6) / (bs.radius || 1);   // a bit beyond the limb leads (2.4R)
+      geo.scale(scale, scale, scale);
+      torso = new THREE.Mesh(geo, torsoMat);
+    } else {
+      torso = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 18), torsoMat);
+      torso.scale.set(meshRadius * 1.9, meshRadius * 1.35, meshRadius * 2.3);
+    }
     g.add(torso);
 
     // Electrodes: limb leads gold, precordials blue, each labelled.

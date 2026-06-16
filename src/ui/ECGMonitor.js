@@ -25,11 +25,14 @@ export class ECGMonitor {
 
     this.canvas = this.el.querySelector('.ecg-canvas');
     this.ctx = this.canvas.getContext('2d');
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
     this.cw = 240; this.ch = 88;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.canvas.width = this.cw * dpr;
-    this.canvas.height = this.ch * dpr;
-    this.ctx.scale(dpr, dpr);
+    this._lastT = 0;
+    // The window is resizable (CSS resize); keep the trace canvas filling it.
+    this._ro = new ResizeObserver(() => this._fit());
+    this._ro.observe(this.canvas);
+    // Re-clamp into view if the viewport shrinks under a dragged window.
+    window.addEventListener('resize', () => this._clampToViewport());
 
     // Lead-selector buttons.
     const leadRow = this.el.querySelector('.ecg-leads');
@@ -48,6 +51,29 @@ export class ECGMonitor {
       this._minBtn.textContent = min ? '+' : '–';
     });
     this._makeDraggable(this.el.querySelector('.ecg-head'));
+    this._fit();
+  }
+
+  /** Resize the backing canvas to match its (resizable) CSS box and redraw. */
+  _fit() {
+    const w = this.canvas.clientWidth || this.cw;
+    const h = this.canvas.clientHeight || this.ch;
+    if (!w || !h) return;
+    this.cw = w; this.ch = h;
+    this.canvas.width = Math.round(w * this.dpr);
+    this.canvas.height = Math.round(h * this.dpr);
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    this._draw(this._lastT);
+  }
+
+  /** Keep a dragged window fully inside the viewport. */
+  _clampToViewport() {
+    if (!this.el.style.left && !this.el.style.top) return;   // still CSS-anchored
+    const r = this.el.getBoundingClientRect();
+    const x = Math.max(0, Math.min(window.innerWidth - r.width, r.left));
+    const y = Math.max(0, Math.min(window.innerHeight - r.height, r.top));
+    this.el.style.left = `${x}px`;
+    this.el.style.top = `${y}px`;
   }
 
   _selectLead(name) {
@@ -66,6 +92,7 @@ export class ECGMonitor {
 
   /** Append a lead-signal sample at sim time `t` (seconds) and redraw. */
   push(t, v) {
+    this._lastT = t;
     this.samples.push({ t, v });
     const t0 = t - this.windowSeconds;
     while (this.samples.length && this.samples[0].t < t0) this.samples.shift();
@@ -119,8 +146,9 @@ export class ECGMonitor {
     });
     handle.addEventListener('pointermove', (e) => {
       if (!dragging) return;
-      const x = Math.max(0, Math.min(window.innerWidth - 40, e.clientX - dx));
-      const y = Math.max(0, Math.min(window.innerHeight - 24, e.clientY - dy));
+      const r = this.el.getBoundingClientRect();
+      const x = Math.max(0, Math.min(window.innerWidth - r.width, e.clientX - dx));
+      const y = Math.max(0, Math.min(window.innerHeight - r.height, e.clientY - dy));
       this.el.style.left = `${x}px`; this.el.style.top = `${y}px`;
     });
     handle.addEventListener('pointerup', () => { dragging = false; });

@@ -66,14 +66,18 @@ describe('VTKLoader.loadFromArrayBuffer', () => {
     expect(uses(4)).toBe(3);
   });
 
-  it('parses the bundled example heart mesh and exposes its point data', async () => {
-    const buf = readFileSync(resolve(process.cwd(), 'public', 'example_mesh.vtu'));
+  it('parses the bundled example heart mesh (binary) and exposes its region tags', async () => {
+    const buf = readFileSync(resolve(process.cwd(), 'public', 'example_heart.vtu'));
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     const { geometry, pointData } = await loadFromArrayBuffer(ab, 'vtu');
 
-    expect(geometry.getAttribute('position').count).toBe(16200);  // 90 × 180 grid
-    expect(geometry.getIndex().count).toBe(32040 * 3);            // 89 × 180 × 2 triangles
-    expect(pointData.apex_base).toBeInstanceOf(Float32Array);
-    expect(pointData.apex_base.length).toBe(16200);
+    const verts = geometry.getAttribute('position').count;
+    expect(verts).toBe(69968);
+    expect(geometry.getIndex().count).toBe(140000 * 3);
+    // Anatomical element tags carried through as a per-point `region` field.
+    expect(pointData.region).toBeInstanceOf(Float32Array);
+    expect(pointData.region.length).toBe(verts);
+    const tags = new Set(Array.from(pointData.region, (r) => Math.round(r)));
+    expect(tags.size).toBe(24);
   });
 });

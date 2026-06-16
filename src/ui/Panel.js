@@ -1,33 +1,29 @@
+import { regionRGB } from '../wave/Colormap.js';
+
 /**
- * Collapsible control panel for wave parameters, colormap, scalar-field overlay,
- * loop toggle and reset. Emits the full parameter state via `onChange` on every
- * edit so the app can live-update.
+ * Wave-simulation controls (stimulus, S1–S2 protocol, conduction params,
+ * colormap + colour key, loop, clear). Renders into a provided `mount` element
+ * (a dock section body) and emits the full parameter state via `onChange` on
+ * every edit so the app can live-update.
  */
 export class Panel {
   /**
    * @param {object} opts
+   * @param {HTMLElement} opts.mount  container to render the controls into
    * @param {(state: PanelState) => void} opts.onChange
    * @param {() => void} opts.onReset
    */
-  constructor({ onChange, onReset, onTrigger, onS1S2, onPreset, onPickS2 }) {
+  constructor({ mount, onChange, onReset, onTrigger, onS1S2, onPickS2 }) {
     this.onChange = onChange;
     this.onReset = onReset;
     this.onTrigger = onTrigger;
     this.onS1S2 = onS1S2;
-    this.onPreset = onPreset;
     this.onPickS2 = onPickS2;
 
-    this.el = document.createElement('div');
-    this.el.className = 'panel';
+    this.el = mount;
     this.el.innerHTML = TEMPLATE;
-    document.body.appendChild(this.el);
 
     this.$ = (id) => this.el.querySelector(`#${id}`);
-
-    // Collapse toggle.
-    this.$('panel-toggle').addEventListener('click', () => {
-      this.el.classList.toggle('collapsed');
-    });
 
     this._bindRange('p-speed', 'p-speed-val', (v) => `${v.toFixed(2)}×`);
     this._bindRange('p-refractory', 'p-refractory-val', (v) => `${v.toFixed(2)} s`);
@@ -39,27 +35,6 @@ export class Panel {
     this.$('p-loop').addEventListener('change', () => this._emit());
     this.$('p-trigger').addEventListener('click', () => this.onTrigger && this.onTrigger());
     this.$('p-reset').addEventListener('click', () => this.onReset && this.onReset());
-    this.$('p-preset-healthy').addEventListener('click', () => this.applyPreset('healthy'));
-    this.$('p-preset-reentry').addEventListener('click', () => this.applyPreset('reentry'));
-  }
-
-  /**
-   * Apply a named preset: write a coherent set of parameters into every control,
-   * emit once, then notify the app (which clears the wave and shows guidance).
-   * The Reentry substrate resolves the mesh's fibrosis field at apply time.
-   */
-  applyPreset(name) {
-    const presets = {
-      healthy: { waveSpeed: 1.0, refractoryPeriod: 0.5, waveWidth: 0.08, s2Coupling: 0.3,
-                 colormap: 'actionPotential', loop: false },
-      // Reentry: speed/refractory tuned so the gated channel circuit sustains.
-      reentry: { waveSpeed: 1.0, refractoryPeriod: 0.45, waveWidth: 0.08, s2Coupling: 0.3,
-                 colormap: 'actionPotential', loop: false },
-    };
-    const p = presets[name];
-    if (!p) return;
-    this.setState(p);
-    if (this.onPreset) this.onPreset(name);
   }
 
   /** Write a partial state into the controls, refresh range labels, emit once. */
@@ -93,6 +68,65 @@ export class Panel {
     this.$('p-s2-status').textContent = text;
   }
 
+  /**
+   * Repaint the colour key under the colormap selector: sample the active
+   * colormap (phase 0 → 1) into the gradient bar, and show the scar swatch only
+   * when the mesh carries a fibrosis field.
+   */
+  setColorKey(fn, hasScar) {
+    this.$('p-colorkey-grad').hidden = false;
+    this.$('p-colorkey-regions').hidden = true;
+    if (fn) {
+      const out = new Float32Array(3);
+      const N = 12, stops = [];
+      for (let i = 0; i <= N; i++) {
+        const p = i / N;
+        fn(p, out, 0);
+        const r = Math.round(out[0] * 255), g = Math.round(out[1] * 255), b = Math.round(out[2] * 255);
+        stops.push(`rgb(${r},${g},${b}) ${Math.round(p * 100)}%`);
+      }
+      this.$('p-colorkey-bar').style.background = `linear-gradient(to right, ${stops.join(',')})`;
+    }
+    this.$('p-colorkey-scar').hidden = !hasScar;
+  }
+
+  /**
+   * Render the anatomical-region legend (Regions view): a clickable swatch per
+   * tag. Clicking isolates that region (click again to clear). `active` is the
+   * currently isolated tag, or null.
+   */
+  setRegionKey(tags, onIsolate, active) {
+    this.$('p-colorkey-grad').hidden = true;
+    const c = this.$('p-colorkey-regions');
+    c.hidden = false;
+    c.innerHTML = '';
+    const note = document.createElement('p');
+    note.className = 'colorkey-note';
+    note.textContent = active != null
+      ? 'Isolating one region — click it again to show all.'
+      : 'Each anatomical region a distinct colour. Click to isolate one.';
+    c.appendChild(note);
+    for (const t of tags) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'region-row' + (active === t ? ' active' : '');
+      const sw = document.createElement('span');
+      sw.className = 'region-sw';
+      const [r, g, b] = regionRGB(t);
+      sw.style.background = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+      row.appendChild(sw);
+      row.append(`Region ${t}`);
+      row.addEventListener('click', () => onIsolate(active === t ? null : t));
+      c.appendChild(row);
+    }
+  }
+
+  /** Set the colormap selector value and emit (used by example loads). */
+  setColormapValue(value) {
+    this.$('p-colormap').value = value;
+    this._emit();
+  }
+
   _bindRange(id, valId, fmt) {
     const input = this.$(id);
     const out = this.$(valId);
@@ -101,10 +135,6 @@ export class Panel {
     this._ranges[id] = update;            // so setState can refresh labels
     input.addEventListener('input', () => { update(); this._emit(); });
     update();
-  }
-
-  show(visible) {
-    this.el.hidden = !visible;
   }
 
   /** @returns {PanelState} */
@@ -127,16 +157,6 @@ export class Panel {
 /** @typedef {{waveSpeed:number,refractoryPeriod:number,waveWidth:number,s2Coupling:number,colormap:string,loop:boolean}} PanelState */
 
 const TEMPLATE = `
-  <div class="panel-head">
-    <span class="panel-title">Controls</span>
-    <button id="panel-toggle" class="panel-toggle" type="button" aria-label="Collapse">▸</button>
-  </div>
-  <div class="panel-body">
-    <div class="presets">
-      <span class="presets-label">Preset</span>
-      <button id="p-preset-healthy" type="button">Healthy</button>
-      <button id="p-preset-reentry" type="button">Reentry</button>
-    </div>
     <button id="p-trigger" class="panel-trigger" type="button" disabled>▶ Stimulate origin (S1)</button>
     <p class="panel-tip">Click the mesh to set the stimulus origin and fire S1, or enable pacing below.</p>
     <div class="s1s2">
@@ -172,12 +192,21 @@ const TEMPLATE = `
         <option value="actionPotential">Action potential</option>
         <option value="viridis">Viridis</option>
         <option value="temperature">Temperature</option>
+        <option value="regions">Regions (anatomy)</option>
       </select>
     </label>
+    <div class="colorkey">
+      <div id="p-colorkey-grad">
+        <div id="p-colorkey-bar" class="colorkey-bar"></div>
+        <div class="colorkey-labels"><span>Rest</span><span>Depolarized</span></div>
+        <p class="colorkey-note">Front depolarizes, then a recovering <em>refractory</em> tail trails it back to rest.</p>
+        <div id="p-colorkey-scar" class="colorkey-scar" hidden><span class="ck-swatch"></span>Scar — conduction slowed / blocked</div>
+      </div>
+      <div id="p-colorkey-regions" class="colorkey-regions" hidden></div>
+    </div>
     <label class="row row-inline">
       <input id="p-loop" type="checkbox" />
       <span class="row-label">Loop</span>
     </label>
-    <button id="p-reset" class="panel-reset" type="button">Reset</button>
-  </div>
+    <button id="p-reset" class="panel-reset" type="button">Clear wave</button>
 `;

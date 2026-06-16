@@ -34,7 +34,7 @@ describe('one-way gate', () => {
 
   it('induces SUSTAINED anatomical reentry on the example mesh from a single beat', () => {
     const { positions, vertexCount, pointData, geometry } =
-      parseVtuAscii(readFileSync(join(ROOT, 'public', 'example_mesh.vtu'), 'utf8'));
+      parseVtuAscii(readFileSync(join(ROOT, 'tests', 'fixtures', 'example_substrate.vtu'), 'utf8'));
     const meshScale = meshScaleOf(positions, vertexCount);
     const baseVelocity = (meshScale / 1.2) * 1.0;
     const vf = velocityFactorFromFibrosis(pointData.fibrosis, vertexCount);

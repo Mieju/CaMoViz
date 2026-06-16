@@ -50,3 +50,26 @@ export const temperature = makeRamp([
 ]);
 
 export const colormaps = { actionPotential, viridis, temperature };
+
+// --- categorical region palette (for the heart's anatomical elemTag) ----------
+
+function hslToRgb(h, s, l) {
+  const k = (n) => (n + h * 12) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  return [f(0), f(8), f(4)];
+}
+
+/** 24 visually-distinct colors via the golden-angle hue walk, alternating tone. */
+export const REGION_COLORS = Array.from({ length: 24 }, (_, i) => {
+  const h = ((i * 137.508) % 360) / 360;
+  const s = 0.5 + 0.15 * (i % 2);
+  const l = 0.5 + (i % 3 === 0 ? 0.12 : i % 3 === 1 ? -0.02 : 0.04);
+  return hslToRgb(h, s, l);
+});
+
+/** RGB (0–1) for an integer region tag (1-based); gray fallback. */
+export function regionRGB(tag) {
+  const t = (tag | 0) - 1;
+  return (t >= 0 && t < REGION_COLORS.length) ? REGION_COLORS[t] : [0.5, 0.5, 0.5];
+}
