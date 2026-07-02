@@ -6,7 +6,7 @@ import { HelpBar } from './ui/HelpBar.js';
 import { PresetsPanel } from './ui/PresetsPanel.js';
 import { Dock, DOCK_ICONS } from './ui/Dock.js';
 import { loadFromArrayBuffer } from './mesh/VTKLoader.js';
-import { buildConductionGraph, applyOneWayGate } from './mesh/ConductionGraph.js';
+import { buildConductionGraph, applyOneWayGate, applyAVBlock } from './mesh/ConductionGraph.js';
 import { ExcitableMedium } from './wave/ExcitableMedium.js';
 import {
   HEART_ANATOMICAL_MATRIX, meshBounds, transformTorso, torsoPlacement, electrodeSites,
@@ -45,6 +45,17 @@ const BUILTIN_PRESETS = [
 
 const CROSS_TIME = 1.2;            // seconds for the front to cross the mesh at speed 1×
 const SCAR_GRAY = [0.50, 0.50, 0.55];
+
+// Atrio-ventricular annulus: on the anatomical heart the atria and ventricles are
+// one continuous surface, so a wave crosses the AV groove at full speed anywhere —
+// physiologically wrong. Insulate them (fibrous skeleton) and reconnect a single
+// AV node with the PR-interval delay (see mesh/ConductionGraph.applyAVBlock). Which
+// elemTag regions are atria vs ventricles on this mesh (1≈LV, 2≈RV, 3≈LA, 4≈RA).
+const VENTRICLE_TAGS = new Set([1, 2]);
+const ATRIA_TAGS = new Set([3, 4]);
+const AV_DELAY = 0.30;            // AV-node conduction delay (s) ≈ PR interval
+const AV_NODE_RADIUS_FRAC = 0.03; // conducting AV-node patch radius (fraction of mesh diameter)
+
 const REGION_DIM = [0.20, 0.22, 0.27];   // non-isolated regions when one is isolated
 
 // Bundled example meshes (preprocessed by scripts/preprocess_examples.py).
@@ -301,6 +312,7 @@ async function renderMesh(buffer, ext, name, opts = {}) {
 function rebuildMedium({ gate = false } = {}) {
   const velocityFactor = buildVelocityFactor();
   const graph = buildConductionGraph(meshGeometry, velocityFactor);
+  applyAVBlock_(graph);
   if (gate) applyReentryGate(graph);
   medium = new ExcitableMedium({
     graph,
@@ -311,16 +323,35 @@ function rebuildMedium({ gate = false } = {}) {
   reentryActive = gate;
 }
 
+/**
+ * Insulate atria from ventricles (fibrous annulus) and reconnect a single AV node
+ * with the PR-interval delay. No-op unless the mesh carries a `region` field with
+ * both atrial and ventricular tags (i.e. the anatomical heart).
+ */
+function applyAVBlock_(graph) {
+  const region = pointData.region;
+  if (!region) return;
+  const isAtrial = (v) => ATRIA_TAGS.has(region[v] | 0);
+  const isVentricular = (v) => VENTRICLE_TAGS.has(region[v] | 0);
+  const positions = meshGeometry.getAttribute('position').array;
+  applyAVBlock(graph, positions, isAtrial, isVentricular, AV_DELAY, meshScale * AV_NODE_RADIUS_FRAC);
+}
+
 /** Install the validated one-way gate at the mesh's `gate` marker. */
 function applyReentryGate(graph) {
   const gateV = markerVertex('gate');
   const fib = pointData.fibrosis;
   if (gateV == null || !fib) return;
   const positions = meshGeometry.getAttribute('position').array;
+  const normals = meshGeometry.getAttribute('normal')?.array;
   const gateXyz = [positions[3 * gateV], positions[3 * gateV + 1], positions[3 * gateV + 2]];
+  const gateNormal = normals
+    ? [normals[3 * gateV], normals[3 * gateV + 1], normals[3 * gateV + 2]]
+    : null;
   applyOneWayGate(
     graph, positions, gateXyz, scarCentroid(), meshScale * GATE_RADIUS_FRAC, GATE_SIGN,
     (v) => fib[v] > 0.3,                 // gate lives in the surviving channel tissue
+    gateNormal,                          // true surface normal → correct circulation tangent
   );
 }
 
