@@ -4,6 +4,7 @@ import { Panel } from './ui/Panel.js';
 import { ECGMonitor } from './ui/ECGMonitor.js';
 import { HelpBar } from './ui/HelpBar.js';
 import { PresetsPanel } from './ui/PresetsPanel.js';
+import { ColormapPanel } from './ui/ColormapPanel.js';
 import { Dock, DOCK_ICONS } from './ui/Dock.js';
 import { loadFromArrayBuffer } from './mesh/VTKLoader.js';
 import { buildConductionGraph, applyOneWayGate, applyAVBlock } from './mesh/ConductionGraph.js';
@@ -133,9 +134,11 @@ const dock = new Dock();
 const meshBody = dock.addSection({ id: 'mesh', title: 'Mesh', icon: DOCK_ICONS.mesh });
 const scenarioBody = dock.addSection({ id: 'scenarios', title: 'Scenarios', icon: DOCK_ICONS.scenarios });
 const simBody = dock.addSection({ id: 'simulation', title: 'Simulation', icon: DOCK_ICONS.simulation });
+const colormapBody = dock.addSection({ id: 'colormap', title: 'Colormap', icon: DOCK_ICONS.colormap });
 const viewBody = dock.addSection({ id: 'view', title: 'View', icon: DOCK_ICONS.view });
 
 const panel = new Panel({ mount: simBody, onChange: onParams, onReset: resetWave, onTrigger: () => stimulate(lastSource), onS1S2: deliverS1S2, onPickS2: () => setPickS2(!pickS2) });
+const colormapPanel = new ColormapPanel({ mount: colormapBody, onChange: onColormapChange, onIsolate: isolateRegion });
 params = panel.state();
 
 const presets = new PresetsPanel({
@@ -239,7 +242,7 @@ async function loadExample(key = 'heart') {
   try {
     const res = await fetch(ex.file);
     if (!res.ok) throw new Error(`example mesh not found (${res.status})`);
-    panel.setColormapValue(ex.view);   // anatomy → Regions; VT → action-potential
+    colormapPanel.setValue(ex.view);   // anatomy → Regions; VT → action-potential
     await renderMesh(await res.arrayBuffer(), ex.ext, ex.file, { anatomical: ex.anatomical });
     // First impression should be alive: auto-fire the Healthy scenario.
     applyPreset(BUILTIN_PRESETS[0]);
@@ -267,7 +270,7 @@ async function renderMesh(buffer, ext, name, opts = {}) {
   regionTags = distinctRegions(pointData.region);
   isolatedRegion = null;
   params = panel.state();
-  applyColormapState(params.colormap);
+  applyColormapState(colormapPanel.value());
   refreshColorKey();
 
   rebuildMedium();        // plain substrate (no reentry gate) for a fresh mesh
@@ -292,6 +295,7 @@ async function renderMesh(buffer, ext, name, opts = {}) {
   setSpeed(1);
   leadsOn = false;
   scene.showLeadOverlay(false);
+  ecg.show(false);               // hidden until the leads toggle is enabled
   els.leadsToggle.textContent = 'Show ECG leads';
   els.leadsToggle.classList.remove('active');
   clearViews();
@@ -549,6 +553,7 @@ function clearViews() {
 function toggleLeads() {
   leadsOn = !leadsOn;
   scene.showLeadOverlay(leadsOn);
+  ecg.show(leadsOn);              // reveal the pseudo-ECG window alongside the leads
   scene.frameRadius(leadsOn ? ecgMaxR * 1.15 : meshScale / 2);
   els.leadsToggle.textContent = leadsOn ? 'Hide ECG leads' : 'Show ECG leads';
   els.leadsToggle.classList.toggle('active', leadsOn);
@@ -616,8 +621,8 @@ function applyColormapState(value) {
 
 /** Show the gradient key, or the region legend when in Regions view. */
 function refreshColorKey() {
-  if (regionView && regionTags.length) panel.setRegionKey(regionTags, isolateRegion, isolatedRegion);
-  else panel.setColorKey(colormap, !!pointData.fibrosis);
+  if (regionView && regionTags.length) colormapPanel.setRegionKey(regionTags, isolatedRegion);
+  else colormapPanel.setColorKey(colormap, !!pointData.fibrosis);
 }
 
 /** Isolate (or clear) a single anatomical region in the Regions view. */
@@ -625,7 +630,7 @@ function isolateRegion(tag) {
   isolatedRegion = tag;
   buildBase();
   applyResting();
-  panel.setRegionKey(regionTags, isolateRegion, isolatedRegion);
+  colormapPanel.setRegionKey(regionTags, isolatedRegion);
 }
 
 /** Recompute resting base colors: resting tissue / region colours + scar overlay. */
@@ -667,8 +672,6 @@ function applyResting() {
 function onParams(state) {
   const prev = params;
   params = state;
-  applyColormapState(state.colormap);
-  refreshColorKey();
 
   // Speed / refractory / wave-width update the medium in place (no graph rebuild,
   // so a running reentry circuit keeps its one-way gate).
@@ -677,6 +680,14 @@ function onParams(state) {
   if (state.loop && !prev.loop) nextPace = simTime;       // start pacing now
   else if (!state.loop) nextPace = Infinity;
 
+  buildBase();
+  applyResting();
+}
+
+/** Colormap section changed the display palette (a display-only change). */
+function onColormapChange(value) {
+  applyColormapState(value);
+  refreshColorKey();
   buildBase();
   applyResting();
 }
@@ -759,7 +770,7 @@ function setOverlay(visible) {
   els.overlay.classList.toggle('hidden', !visible);
   dock.show(!visible);
   els.transport.hidden = visible;
-  ecg.show(!visible);
+  if (visible) ecg.show(false);   // ECG only appears when enabled via the leads toggle
   helpBar.show(!visible);
 }
 

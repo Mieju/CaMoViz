@@ -1,8 +1,9 @@
 /**
- * Left-edge dock: a thin always-visible icon rail plus a flyout drawer that
- * shows one section's controls at a time. Replaces the scatter of floating
- * panels with a single tidy home, while keeping the 3D mesh the hero — clicking
- * the active icon (or the flyout's ×) collapses back to just the rail.
+ * Left-edge dock: an always-visible labeled sidebar (icon + name per section)
+ * plus a flyout drawer that shows one section's controls at a time. Replaces the
+ * scatter of floating panels with a single tidy home, while keeping the 3D mesh
+ * the hero — clicking the active row (or the flyout's ×) collapses back to just
+ * the sidebar.
  *
  * Each registered section returns a content element for the caller to populate;
  * the dock owns only the chrome (rail icon, section header, show/hide logic).
@@ -13,7 +14,7 @@ export class Dock {
     this.el.className = 'dock';
     this.el.hidden = true;
     this.el.innerHTML = `
-      <div class="dock-rail"></div>
+      <div class="dock-rail"><div class="dock-rail-title">Controls</div></div>
       <div class="dock-flyout" hidden><div class="dock-flyout-inner"></div></div>`;
     document.body.appendChild(this.el);
 
@@ -32,9 +33,8 @@ export class Dock {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'dock-icon';
-    btn.title = title;
     btn.setAttribute('aria-label', title);
-    btn.innerHTML = icon;
+    btn.innerHTML = `<span class="dock-icon-glyph">${icon}</span><span class="dock-icon-label">${title}</span>`;
     btn.addEventListener('click', () => this.toggle(id));
     this.rail.appendChild(btn);
 
@@ -88,4 +88,5 @@ export const DOCK_ICONS = {
   scenarios: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>`,
   simulation: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></g><g fill="var(--bg)" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="7" r="2.3"/><circle cx="15" cy="12" r="2.3"/><circle cx="8" cy="17" r="2.3"/></g></svg>`,
   view: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 6c-4.5 0-8.3 2.9-9.8 7 1.5 4.1 5.3 7 9.8 7s8.3-2.9 9.8-7C20.3 8.9 16.5 6 12 6zm0 11.5A4.5 4.5 0 1112 8.5a4.5 4.5 0 010 9zm0-2A2.5 2.5 0 1012 10.5a2.5 2.5 0 000 5z"/></svg>`,
+  colormap: `<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 000 20 3 3 0 003-3 2.9 2.9 0 00-.8-2 2.9 2.9 0 01-.7-2 3 3 0 013-3h1.5a4 4 0 004-4c0-3.9-4.9-6-9-6zm-5.5 9a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm3-4a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm5 0a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm3.5 4a1.5 1.5 0 110-3 1.5 1.5 0 010 3z"/></svg>`,
 };
