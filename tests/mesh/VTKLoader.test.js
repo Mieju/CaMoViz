@@ -71,13 +71,16 @@ describe('VTKLoader.loadFromArrayBuffer', () => {
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     const { geometry, pointData } = await loadFromArrayBuffer(ab, 'vtu');
 
+    // Counts reflect the shipped surface after preprocessing drops the aorta
+    // (elemTag 5) — see scripts/preprocess_examples.py DROP_REGIONS.
     const verts = geometry.getAttribute('position').count;
-    expect(verts).toBe(69968);
-    expect(geometry.getIndex().count).toBe(140000 * 3);
+    expect(verts).toBe(64708);
+    expect(geometry.getIndex().count).toBe(128936 * 3);
     // Anatomical element tags carried through as a per-point `region` field.
     expect(pointData.region).toBeInstanceOf(Float32Array);
     expect(pointData.region.length).toBe(verts);
     const tags = new Set(Array.from(pointData.region, (r) => Math.round(r)));
-    expect(tags.size).toBe(24);
+    expect(tags.size).toBe(23);          // 24 original regions minus the aorta
+    expect(tags.has(5)).toBe(false);     // aorta fully excised
   });
 });

@@ -49,7 +49,7 @@ export class ExcitableMedium {
   /** Advance the simulation, processing all firing events up to `toTime`. */
   step(toTime) {
     const q = this.queue;
-    const { offsets, neighbors, edgeLen, edgeFactor } = this.g;
+    const { offsets, neighbors, edgeLen, edgeFactor, edgeDelay } = this.g;
     const lastFired = this.lastFired;
     const refractory = this.refractoryPeriod;
     const vel = this.baseVelocity;
@@ -67,7 +67,8 @@ export class ExcitableMedium {
       for (let e = offsets[v]; e < end; e++) {
         const f = edgeFactor[e];
         if (f <= 0) continue; // conduction block
-        this.queue.push(neighbors[e], t + edgeLen[e] / (vel * f));
+        const extra = edgeDelay ? edgeDelay[e] : 0; // fixed AV-node delay, if any
+        this.queue.push(neighbors[e], t + edgeLen[e] / (vel * f) + extra);
       }
     }
     this.simTime = toTime;

@@ -1,12 +1,19 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import * as THREE from 'three';
 import { buildConductionGraph, applyOneWayGate } from '../../src/mesh/ConductionGraph.js';
 import { ExcitableMedium } from '../../src/wave/ExcitableMedium.js';
-import { parseVtuAscii, velocityFactorFromFibrosis, markerVertex } from '../helpers/parseVtuAscii.js';
+import { loadFromArrayBuffer } from '../../src/mesh/VTKLoader.js';
+import { HEART_ANATOMICAL_MATRIX } from '../../src/mesh/TorsoFit.js';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+
+// Gate parameters — must match src/main.js (GATE_RADIUS_FRAC / GATE_SIGN).
+const GATE_RADIUS_FRAC = 0.15;
+const GATE_SIGN = 1;
 
 describe('one-way gate', () => {
   it('makes a directed edge conduct one way only', () => {
@@ -32,42 +39,81 @@ describe('one-way gate', () => {
     expect(oneWayPairs).toBeGreaterThan(0);
   });
 
-  it('induces SUSTAINED anatomical reentry on the example mesh from a single beat', () => {
-    const { positions, vertexCount, pointData, geometry } =
-      parseVtuAscii(readFileSync(join(ROOT, 'tests', 'fixtures', 'example_substrate.vtu'), 'utf8'));
+  it('induces SUSTAINED anatomical reentry on the SHIPPED heart substrate', async () => {
+    // Load and transform exactly as the app does (SceneManager.setMesh): apply the
+    // anatomical rotation, recompute normals, recenter on the bounding-box centre.
+    const buf = readFileSync(join(ROOT, 'public', 'example_heart_vt.vtu'));
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const { geometry, pointData } = await loadFromArrayBuffer(ab, 'vtu');
+    const m = HEART_ANATOMICAL_MATRIX;
+    geometry.applyMatrix4(new THREE.Matrix4().set(
+      m[0], m[1], m[2], 0, m[3], m[4], m[5], 0, m[6], m[7], m[8], 0, 0, 0, 0, 1));
+    geometry.deleteAttribute('normal');
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    const c = new THREE.Vector3();
+    geometry.boundingBox.getCenter(c);
+    geometry.translate(-c.x, -c.y, -c.z);
+
+    const positions = geometry.getAttribute('position').array;
+    const normals = geometry.getAttribute('normal').array;
+    const vertexCount = geometry.getAttribute('position').count;
     const meshScale = meshScaleOf(positions, vertexCount);
     const baseVelocity = (meshScale / 1.2) * 1.0;
-    const vf = velocityFactorFromFibrosis(pointData.fibrosis, vertexCount);
+    const vf = velocityFactor(pointData.fibrosis, vertexCount);
+
+    const gateV = markerVertex(pointData.gate);
+    const s1 = markerVertex(pointData.reentry_s1);
+    const gateXyz = [positions[3 * gateV], positions[3 * gateV + 1], positions[3 * gateV + 2]];
+    const gateNormal = [normals[3 * gateV], normals[3 * gateV + 1], normals[3 * gateV + 2]];
+    const center = scarCentroid(positions, vertexCount, pointData.fibrosis);
 
     // Build the gated substrate exactly as the app's Reentry preset does.
     const graph = buildConductionGraph(geometry, vf);
-    const gateV = markerVertex(pointData.gate);
-    const gateXyz = [positions[3 * gateV], positions[3 * gateV + 1], positions[3 * gateV + 2]];
-    const center = scarCentroid(positions, vertexCount, pointData.fibrosis);
-    const blocked = applyOneWayGate(graph, positions, gateXyz, center, meshScale * 0.15, 1, (v) => pointData.fibrosis[v] > 0.3);
-    expect(blocked).toBeGreaterThan(10);
+    const blocked = applyOneWayGate(
+      graph, positions, gateXyz, center, meshScale * GATE_RADIUS_FRAC, GATE_SIGN,
+      (v) => pointData.fibrosis[v] > 0.3, gateNormal);
+    expect(blocked).toBeGreaterThan(50);
 
-    const m = new ExcitableMedium({ graph, baseVelocity, refractoryPeriod: 0.45, waveWidth: 0.08 });
-    const s1 = markerVertex(pointData.reentry_s1);
-    m.stimulate(s1, 0);
+    // Step incrementally as the app does each animation frame (one giant step()
+    // would hit the engine's per-call event-budget cap on a sustained circuit).
+    const sim = new ExcitableMedium({ graph, baseVelocity, refractoryPeriod: 0.45, waveWidth: 0.08 });
+    sim.stimulate(s1, 0);
+    stepTo(sim, 15);
+    // Many laps later the circuit is still re-firing the ventricle each cycle.
+    expect(firedAfter(sim, 14)).toBeGreaterThan(2000);
 
-    // A single beat WITH the gate must still be circulating many laps later.
-    m.step(20);
-    expect(m.isActive).toBe(true);
-
-    // Control: without the gate, the same single beat dies out.
+    // Control: the same single beat WITHOUT the gate dies out (two arms annihilate).
     const plain = buildConductionGraph(geometry, vf);
-    const m2 = new ExcitableMedium({ graph: plain, baseVelocity, refractoryPeriod: 0.45, waveWidth: 0.08 });
-    m2.stimulate(s1, 0);
-    m2.step(20);
-    expect(m2.isActive).toBe(false);
+    const sim2 = new ExcitableMedium({ graph: plain, baseVelocity, refractoryPeriod: 0.45, waveWidth: 0.08 });
+    sim2.stimulate(s1, 0);
+    stepTo(sim2, 15);
+    expect(firedAfter(sim2, 14)).toBeLessThan(100);
   });
 });
 
+function markerVertex(field) {
+  let best = -1, val = 0.5;
+  for (let v = 0; v < field.length; v++) if (field[v] > val) { val = field[v]; best = v; }
+  return best;
+}
+function velocityFactor(fib, n) {
+  const f = new Float32Array(n);
+  for (let v = 0; v < n; v++) f[v] = Math.max(0, Math.min(1, 1 - fib[v]));
+  return f;
+}
 function scarCentroid(p, n, fib) {
   let sx = 0, sy = 0, sz = 0, c = 0;
   for (let v = 0; v < n; v++) if (fib[v] >= 0.95) { sx += p[3 * v]; sy += p[3 * v + 1]; sz += p[3 * v + 2]; c++; }
   return [sx / c, sy / c, sz / c];
+}
+function stepTo(sim, tEnd) {
+  for (let t = 0.1; t <= tEnd + 1e-6; t += 0.1) sim.step(t);
+}
+function firedAfter(sim, t) {
+  let n = 0;
+  for (let v = 0; v < sim.vertexCount; v++) if (sim.lastFired[v] > t) n++;
+  return n;
 }
 function meshScaleOf(pos, n) {
   let a = [Infinity, Infinity, Infinity], b = [-Infinity, -Infinity, -Infinity];

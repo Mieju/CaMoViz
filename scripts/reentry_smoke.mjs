@@ -26,9 +26,12 @@ await page.waitForSelector('.pw-apply', { timeout: 5000 });
 await page.click('.pw-apply >> text=Reentry');
 await page.waitForTimeout(500);
 
-// Screenshot the canvas twice, ~1.5 s apart: a live rotor must change pixels.
+// A dying single wave would be quiescent within a few seconds, so sample the
+// canvas LATE (≈8 s after S1) twice ~1.5 s apart: a SUSTAINED rotor must still be
+// changing pixels then.
 const canvas = page.locator('#viewport canvas');
 const sum = (buf) => { let s = 0; for (let i = 0; i < buf.length; i += 101) s += buf[i]; return s; };
+await page.waitForTimeout(8000);                 // let the circuit run many laps
 const a = sum(await canvas.screenshot());
 await page.waitForTimeout(1500);
 const b = sum(await canvas.screenshot());
@@ -36,7 +39,7 @@ const b = sum(await canvas.screenshot());
 await browser.close();
 
 console.log('console errors:', errors.length, errors.slice(0, 5));
-console.log('frame checksums:', a, b, 'changed:', a !== b);
+console.log('late frame checksums:', a, b, 'changed:', a !== b);
 if (errors.length) { console.log('FAIL: console errors'); process.exit(1); }
-if (a === b) { console.log('FAIL: canvas not animating (rotor may have died or not rendered)'); process.exit(1); }
-console.log('REENTRY SMOKE OK — rotor renders and animates');
+if (a === b) { console.log('FAIL: rotor not sustained (canvas static ~8 s after S1)'); process.exit(1); }
+console.log('REENTRY SMOKE OK — reentry still circulating ~10 s after a single beat');

@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PUB = os.path.join(HERE, "public")      # shipped .vtu outputs
 SRC = os.path.join(HERE, "data")        # raw .vtk inputs (git-ignored, not shipped)
 TARGET_TRIS = 140_000                    # decimate the heart surface to ~this many
+DROP_REGIONS = {5}                       # elemTags to cut from the heart surface (5 = aorta)
 
 
 def log(*a):
@@ -92,6 +93,25 @@ def remap_nearest(src_poly, src_vals, dst_pts):
     return out
 
 
+def drop_regions(pts, tris, region, drop):
+    """Remove every triangle that touches a vertex whose `region` tag is in `drop`,
+    then compact out the now-unreferenced vertices (remapping tris + region). Because
+    a triangle goes as soon as any corner is dropped, no dropped-tag vertex survives
+    on the seam — the structure is fully excised, leaving a clean hole where it was
+    attached. Returns (pts, tris, region)."""
+    drop = set(int(d) for d in drop)
+    drop_vert = np.array([r in drop for r in region])
+    keep = ~drop_vert[tris].any(axis=1)
+    tris = tris[keep]
+    used = np.unique(tris)
+    remap = np.full(len(pts), -1, np.int64)
+    remap[used] = np.arange(len(used))
+    tris = remap[tris].astype(np.int32)
+    log(f"  dropped regions {sorted(drop)}: -{int((~keep).sum()):,} tris, "
+        f"-{len(pts) - len(used):,} verts")
+    return pts[used], tris.reshape(-1, 3), region[used]
+
+
 def write_vtu(path, pts, tris, point_data=None):
     pd = {k: np.ascontiguousarray(v, np.float32) for k, v in (point_data or {}).items()}
     mesh = meshio.Mesh(points=pts.astype(np.float32), cells=[("triangle", tris)], point_data=pd)
@@ -121,49 +141,118 @@ def process_heart():
         region = full_region
     log(f"  region tags present: {sorted(set(int(r) for r in region))}")
 
+    pts, tris, region = drop_regions(pts, tris, region, DROP_REGIONS)
+
     write_vtu(os.path.join(PUB, "example_heart.vtu"), pts, tris, {"region": region})
-    write_vtu(os.path.join(PUB, "example_heart_vt.vtu"), pts, tris, vt_substrate(pts, region))
+    write_vtu(os.path.join(PUB, "example_heart_vt.vtu"), pts, tris, vt_substrate(pts, tris, region))
 
 
-def vt_substrate(pts, region):
-    """
-    Best-effort synthetic VT substrate on the new anatomy: a dense scar core + a
-    thin surviving conducting channel with one entrance corridor on the LV free
-    wall, plus the markers the Reentry preset needs (pace_site / reentry_s1 /
-    gate). Geometry-only heuristic — not anatomically derived.
-    """
+# --- VT substrate -----------------------------------------------------------
+# Post-infarct VT substrate built with the proven core→channel→rim(+corridor)
+# topology (cf. scripts/generate_fixtures.py): a dense non-conducting CORE, a thin
+# slow surviving CHANNEL ring around it, and a dense RIM blocking the channel from
+# the surrounding healthy myocardium *except* a single CORRIDOR mouth. Block on both
+# sides forces a wave entering the corridor to travel the channel loop — so a
+# one-way GATE in the channel makes it a sustained anatomical-reentry circuit (a
+# small scar with no rim cannot sustain reentry: the wave just floods around it
+# through healthy tissue and annihilates). Bands are GEODESIC (surface Dijkstra),
+# so they stay true rings on the curved surface, and the corridor is an azimuthal
+# wedge in the seed's tangent plane. Tuned offline so the Reentry preset sustains
+# (see the engine port used for tuning); the same fields are validated by
+# tests/wave/Reentry.test.js against this shipped file.
+VT_R_CORE = 0.10        # dense core radius (geodesic, fraction of mesh diameter)
+VT_R_CHAN = 0.16        # channel outer radius (slow surviving loop)
+VT_R_RIM = 0.24         # dense rim outer radius (block beyond the loop)
+VT_GAP_HALF = 0.60      # corridor azimuthal half-width (radians)
+VT_CHANNEL_BLOCK = 0.62  # slow channel block (→ conduction factor 0.38)
+
+
+def _adjacency(tris, n):
+    nbr = [set() for _ in range(n)]
+    for a, b, c in tris:
+        nbr[a].update((b, c)); nbr[b].update((a, c)); nbr[c].update((a, b))
+    return [sorted(s) for s in nbr]
+
+
+def _geodesic_from(seed, pts, nbr):
+    """Per-vertex geodesic (surface graph) distance from `seed` via Dijkstra."""
+    import heapq
+    d = np.full(len(pts), np.inf); d[seed] = 0.0
+    pq = [(0.0, int(seed))]
+    while pq:
+        dd, v = heapq.heappop(pq)
+        if dd > d[v]:
+            continue
+        for w in nbr[v]:
+            nd = dd + float(np.linalg.norm(pts[v] - pts[w]))
+            if nd < d[w]:
+                d[w] = nd; heapq.heappush(pq, (nd, w))
+    return d
+
+
+def vt_substrate(pts, tris, region):
+    """Synthetic post-infarct VT substrate (fibrosis + pace_site/reentry_s1/gate
+    markers) on the LV free wall. See the parameter block above. Geometry-only
+    heuristic — not anatomically derived."""
     pts = pts.astype(np.float64)
+    tris = np.asarray(tris)
     n = len(pts)
     lv = region == 1
     if lv.sum() < 50:
         lv = np.ones(n, bool)
 
-    c = pts[lv].mean(0)
-    diam = np.linalg.norm(pts - c, axis=1).max() * 2
-    seed = np.where(lv)[0][np.argmax(np.linalg.norm(pts[lv] - c, axis=1))]
-    s = pts[seed]
-    ds = np.linalg.norm(pts - s, axis=1)
+    diam = np.linalg.norm(pts - pts.mean(0), axis=1).max() * 2
+    lvc = pts[lv].mean(0)
+    seed = int(np.where(lv)[0][np.argmax(np.linalg.norm(pts[lv] - lvc, axis=1))])
+    nbr = _adjacency(tris, n)
+    d = _geodesic_from(seed, pts, nbr)
 
-    core_r, chan_r = 0.16 * diam, 0.26 * diam
+    # Surface normal at the seed (area-weighted) → tangent-plane azimuth for the
+    # corridor wedge, undistorted by the surface curvature.
+    fnorm = np.cross(pts[tris[:, 1]] - pts[tris[:, 0]], pts[tris[:, 2]] - pts[tris[:, 0]])
+    vn = np.zeros((n, 3))
+    for k in range(3):
+        np.add.at(vn, tris[:, k], fnorm)
+    sn = vn[seed] / (np.linalg.norm(vn[seed]) or 1)
+    ref = np.array([0.0, 0.0, 1.0])
+    e1 = ref - np.dot(ref, sn) * sn
+    if np.linalg.norm(e1) < 1e-6:
+        e1 = np.array([0.0, 1.0, 0.0]) - np.dot([0, 1, 0], sn) * sn
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(sn, e1)
+    vseed = pts - pts[seed]
+    alpha = np.arctan2(vseed @ e2, vseed @ e1)
+
+    core, chan, rim = VT_R_CORE * diam, VT_R_CHAN * diam, VT_R_RIM * diam
     fib = np.zeros(n, np.float32)
-    fib[ds < chan_r] = 0.55                       # surviving slow channel ring
-    fib[ds < core_r] = 1.0                        # dense non-conducting core
-    ang = np.arctan2((pts - s)[:, 1], (pts - s)[:, 0])
-    corridor = (np.abs(ang) < 0.5) & (ds < chan_r) & (ds > core_r * 0.8)
-    fib[corridor] = 0.55                          # open one entrance corridor
-    fib[~lv] = 0.0
+    inb = lv & (d < rim)
+    fib[inb & (d < chan)] = VT_CHANNEL_BLOCK          # slow channel
+    fib[inb & (d < core)] = 1.0                       # dense core
+    ring = inb & (d >= chan) & (d < rim)
+    corridor = ring & (np.abs((alpha + np.pi) % (2 * np.pi) - np.pi) < VT_GAP_HALF)
+    fib[ring] = 1.0                                   # dense rim
+    fib[corridor] = VT_CHANNEL_BLOCK                  # corridor mouth (gap in rim)
 
     def one_hot(idx):
-        a = np.zeros(n, np.float32)
-        a[idx] = 1.0
+        a = np.zeros(n, np.float32); a[idx] = 1.0
         return a
 
-    healthy = np.where(fib < 0.05)[0]
-    pace_idx = healthy[np.argmax(ds[healthy])] if len(healthy) else int(np.argmax(ds))
-    ent = np.where(corridor)[0]
-    s1_idx = int(ent[0]) if len(ent) else int(np.argmin(np.abs(ds - chan_r)))
-    gate_idx = int(ent[len(ent) // 2]) if len(ent) else s1_idx
+    channel = (fib > 0.3) & (fib < 0.95)
+    # gate: channel vertex deepest into the corridor mouth (one-way valve site).
+    cc = np.where(corridor & channel)[0]
+    gate_idx = int(cc[np.argmax(d[cc])]) if len(cc) else int(np.where(channel)[0][0])
+    # reentry_s1: healthy vertex just outside the corridor mouth (S1 enters here).
+    ca = float(np.mean(alpha[corridor])) if corridor.any() else 0.0
+    healthy = fib <= 0.05
+    mouth = healthy & (d > rim) & (d < rim * 1.6) & \
+        (np.abs((alpha - ca + np.pi) % (2 * np.pi) - np.pi) < VT_GAP_HALF)
+    s1_idx = int(np.where(mouth)[0][np.argmin(d[mouth])]) if mouth.any() \
+        else int(np.where(healthy)[0][np.argmin(d[healthy])])
+    # pace_site: healthy myocardium far from the scar (clean Healthy-preset wave).
+    pace_idx = int(np.where(healthy)[0][np.argmax(d[healthy])])
 
+    log(f"  VT substrate: core={int((fib >= 0.95).sum())} channel={int(channel.sum())} "
+        f"corridor={int(corridor.sum())} gate={gate_idx} s1={s1_idx} pace={pace_idx}")
     return {
         "fibrosis": fib,
         "pace_site": one_hot(pace_idx),

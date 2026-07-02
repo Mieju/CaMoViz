@@ -11,9 +11,13 @@ import { buildConductionGraph } from '../src/mesh/ConductionGraph.js';
 import { ExcitableMedium } from '../src/wave/ExcitableMedium.js';
 import { parseVtuAscii, velocityFactorFromFibrosis } from '../tests/helpers/parseVtuAscii.js';
 
+// NOTE: this is a legacy gate-sweep tool for the synthetic prolate-spheroid
+// substrate (now the ASCII test fixture). The shipped heart VT substrate is
+// (re)built by scripts/build_vt_substrate.py and validated by
+// tests/wave/Reentry.test.js against public/example_heart_vt.vtu.
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const { positions, vertexCount, pointData, geometry } =
-  parseVtuAscii(readFileSync(join(ROOT, 'public', 'example_mesh.vtu'), 'utf8'));
+  parseVtuAscii(readFileSync(join(ROOT, 'tests', 'fixtures', 'example_substrate.vtu'), 'utf8'));
 
 const meshScale = meshScaleOf(positions, vertexCount);
 const baseV = (meshScale / 1.2) * 1.0;

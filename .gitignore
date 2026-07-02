@@ -5,6 +5,11 @@ dist
 
 # Python venv for fixture generation
 .venv
+__pycache__/
+*.pyc
+
+# R history
+.Rhistory
 
 # Local-only test mesh (large; provide your own)
 block.vtu
