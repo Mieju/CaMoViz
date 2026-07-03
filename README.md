@@ -74,8 +74,9 @@ repolarization tail that settles back to rest. A marker shows the stimulus origi
   point). The **coupling interval** is measured from when the S2 *site* activates,
   so a coupling above the refractory period captures and below it blocks, wherever
   S2 sits — the classic protocol for probing block and reentry.
-- Conduction speed **auto-scales to the mesh** so a front crosses in ~1.2 s
-  regardless of the file's units.
+- Conduction speed uses **absolute velocities from literature** (working myocardium
+  ~0.6 m/s ventricle, ~0.8 m/s atrium; the mesh is in mm), scaled by the `waveSpeed`
+  slider as a physiological multiplier (1× = literature). Fibrosis slows or blocks it.
 
 ### The dock
 
@@ -152,8 +153,10 @@ due by the current sim time. For the earliest event `(v, t)`:
 
 This local rule is exactly the **eikonal equation** `‖∇T‖ = 1/c` (with local speed
 `c = v_base · f`) solved greedily on the graph — each cell's activation time is the
-shortest *time-weighted* path from a stimulus. The base speed
-`v_base = (meshScale / 1.2 s) · waveSpeed` auto-scales to the mesh (`src/main.js`).
+shortest *time-weighted* path from a stimulus. The base speed is an **absolute
+reference velocity** `v_base = REF_CV_MM_S · waveSpeed` (600 mm/s, ventricular), and
+the per-edge factor `f_e` is the region's literature CV ratio × (1 − fibrosis), so an
+edge conducts at true mm/s on the millimetre mesh (`src/main.js`, `CV_MM_S`).
 
 Colour is **phenomenological**, not voltage. `getPhase(v)` maps time-since-firing to
 a normalized action-potential shape: a `0 → 1` upstroke over `waveWidth`, then a

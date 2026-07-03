@@ -13,6 +13,8 @@ from preprocess_examples import vt_substrate, write_vtu, PUB, HERE
 
 
 def main():
+    # The VT substrate shares the beautified anatomy geometry (example_heart.vtu) — retune
+    # the fibrosis/marker fields in place without re-reading the raw 228 MB .vtk.
     src = os.path.join(PUB, "example_heart.vtu")
     m = meshio.read(src)
     pts = m.points.astype(np.float32)
@@ -20,7 +22,10 @@ def main():
     region = m.point_data["region"].astype(np.int64)
     print(f"loaded {os.path.relpath(src, HERE)}: {len(pts):,} pts, {len(tris):,} tris")
     fields = vt_substrate(pts, tris, region)
-    write_vtu(os.path.join(PUB, "example_heart_vt.vtu"), pts, tris, fields)
+    # Carry the region field through: the app uses it to block the great vessels and
+    # insulate the atria (AV block), which confines the reentry wave to the ventricle.
+    write_vtu(os.path.join(PUB, "example_heart_vt.vtu"), pts, tris,
+              {"region": region.astype(np.float32), **fields})
 
 
 if __name__ == "__main__":

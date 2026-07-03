@@ -18,7 +18,10 @@ export class ExcitableMedium {
   /**
    * @param {object} opts
    * @param {ReturnType<import('../mesh/ConductionGraph.js').buildConductionGraph>} opts.graph
-   * @param {number} opts.baseVelocity        conduction speed (mesh units / second) at factor 1
+   * @param {number} opts.baseVelocity        conduction speed at factor 1 — an absolute
+   *   reference velocity in mesh units/second (mm/s for the anatomical heart). The
+   *   per-edge `edgeFactor` is a regional CV ratio × (1 − fibrosis), so an edge
+   *   conducts at baseVelocity·edgeFactor.
    * @param {number} opts.refractoryPeriod    seconds from activation back to excitable
    * @param {number} opts.waveWidth           seconds of the depolarization upstroke
    */
@@ -32,6 +35,20 @@ export class ExcitableMedium {
     this.firedList = [];                            // vertices to recolor each frame
     this.queue = new PriorityQueue();               // future firing events (priority = time)
     this.simTime = 0;
+
+    // Specialised-conduction-system links (e.g. His–Purkinje): directed, non-local
+    // "jumps" that fire a distant vertex after a fixed delay when their source fires —
+    // used to deliver the AV-node impulse to the ventricular breakthrough sites. See
+    // {@link import('../mesh/ConductionGraph.js').applyAVBlock}.
+    this._pathsFrom = null;
+    if (graph.conductionPaths && graph.conductionPaths.length) {
+      this._pathsFrom = new Map();
+      for (const { from, to, delay } of graph.conductionPaths) {
+        const list = this._pathsFrom.get(from) || [];
+        list.push([to, delay]);
+        this._pathsFrom.set(from, list);
+      }
+    }
   }
 
   setParams({ baseVelocity, refractoryPeriod, waveWidth }) {
@@ -69,6 +86,12 @@ export class ExcitableMedium {
         if (f <= 0) continue; // conduction block
         const extra = edgeDelay ? edgeDelay[e] : 0; // fixed AV-node delay, if any
         this.queue.push(neighbors[e], t + edgeLen[e] / (vel * f) + extra);
+      }
+      // Specialised conduction system: fire any His–Purkinje breakthrough this vertex
+      // drives, after its fixed delay (one-way — the target still checks refractory).
+      if (this._pathsFrom) {
+        const paths = this._pathsFrom.get(v);
+        if (paths) for (let k = 0; k < paths.length; k++) this.queue.push(paths[k][0], t + paths[k][1]);
       }
     }
     this.simTime = toTime;

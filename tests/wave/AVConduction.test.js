@@ -10,10 +10,10 @@ import { loadFromArrayBuffer } from '../../src/mesh/VTKLoader.js';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
-// AV-model parameters — must match src/main.js.
+// AV-model parameters — must match src/main.js (AV_NODE_DELAY + HIS_DELAY).
 const VENTRICLE_TAGS = new Set([1, 2]);
 const ATRIA_TAGS = new Set([3, 4]);
-const AV_DELAY = 0.30;
+const AV_DELAY = 0.16;
 const AV_NODE_RADIUS_FRAC = 0.03;
 
 /** Reachable set from `seed` over conducting edges (factor > 0), ignoring refractory. */
@@ -117,5 +117,61 @@ describe('AV block (fibrous annulus + AV node)', () => {
     let leak = 0;
     for (let v = 0; v < graph.vertexCount; v++) if (isV(v) && seen[v]) leak++;
     expect(leak).toBe(0);
+  });
+
+  it('starts the ventricles at the His–Purkinje breakthroughs (apex→base), not the base', async () => {
+    const buf = readFileSync(join(ROOT, 'public', 'example_heart.vtu'));
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const { geometry, pointData } = await loadFromArrayBuffer(ab, 'vtu');
+    geometry.computeBoundingSphere();
+    const meshScale = geometry.boundingSphere.radius * 2;
+    const region = pointData.region;
+    const isA = (v) => ATRIA_TAGS.has(region[v] | 0);
+    const isV = (v) => VENTRICLE_TAGS.has(region[v] | 0);
+    const positions = geometry.getAttribute('position').array;
+    const yOf = (v) => positions[3 * v + 1];
+
+    // Pick a low LV and low RV vertex as the two breakthroughs (this test validates the
+    // rerouting mechanism, not the anatomical site: the app's ventricularBreakthroughs()
+    // targets the true septal-apex). Using the y extreme keeps them apical for the
+    // "not at the base" assertion below, independent of the raw mesh orientation.
+    let yLo = Infinity, yHi = -Infinity;
+    for (let v = 0; v < geometry.getAttribute('position').count; v++)
+      if (isV(v)) { const y = yOf(v); if (y < yLo) yLo = y; if (y > yHi) yHi = y; }
+    const lowestOf = (tag) => {
+      let best = -1, lo = Infinity;
+      for (let v = 0; v < geometry.getAttribute('position').count; v++)
+        if ((region[v] | 0) === tag && yOf(v) < lo) { lo = yOf(v); best = v; }
+      return best;
+    };
+    const breakthroughs = [lowestOf(1), lowestOf(2)];
+
+    const graph = buildConductionGraph(geometry);
+    const res = applyAVBlock(graph, positions, isA, isV, AV_DELAY, meshScale * AV_NODE_RADIUS_FRAC, breakthroughs);
+    // Complete annulus (no basal bridge) + two directed His paths.
+    expect(res.bridged).toBe(2);
+    expect(graph.conductionPaths.map((p) => p.to).sort()).toEqual([...breakthroughs].sort());
+
+    // Pace an atrium: the ventricles must break through AT a breakthrough site first,
+    // after the delay — and that site is apical (lower half of the ventricular range),
+    // not up at the base near the atria.
+    let seed = -1; for (let v = 0; v < graph.vertexCount; v++) if (isA(v)) { seed = v; break; }
+    const sim = new ExcitableMedium({ graph, baseVelocity: meshScale / 1.2, refractoryPeriod: 0.5, waveWidth: 0.08 });
+    sim.stimulate(seed, 0);
+    sim.step(3);
+    let firstV = -1, firstT = Infinity;
+    for (let v = 0; v < graph.vertexCount; v++)
+      if (isV(v) && isFinite(sim.lastFired[v]) && sim.lastFired[v] < firstT) { firstT = sim.lastFired[v]; firstV = v; }
+    expect(breakthroughs).toContain(firstV);           // ventricles start at a breakthrough
+    expect(firstT).toBeGreaterThan(AV_DELAY);          // only after the PR delay
+    expect(yOf(firstV)).toBeLessThan((yLo + yHi) / 2); // apical half, not the base
+
+    // Still one-way: a ventricular stimulus fires no atrial vertex.
+    const simV = new ExcitableMedium({ graph, baseVelocity: meshScale / 1.2, refractoryPeriod: 0.5, waveWidth: 0.08 });
+    simV.stimulate(breakthroughs[0], 0);
+    simV.step(3);
+    let atriaFired = 0;
+    for (let v = 0; v < graph.vertexCount; v++) if (isA(v) && isFinite(simV.lastFired[v])) atriaFired++;
+    expect(atriaFired).toBe(0);
   });
 });

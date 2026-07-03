@@ -37,23 +37,38 @@ const els = {
 // Note: presets intentionally omit `colormap` — the display palette (incl. the
 // anatomical Regions view) is a separate display choice we don't want to clobber.
 const BUILTIN_PRESETS = [
-  { id: 'healthy', name: 'Healthy', builtin: true, gate: false,
+  { id: 'healthy', name: 'Healthy', builtin: true, gate: false, mesh: 'heart',
     params: { waveSpeed: 1.0, refractoryPeriod: 0.5, waveWidth: 0.08, s2Coupling: 0.3, loop: false } },
-  { id: 'reentry', name: 'Reentry', builtin: true, gate: true,
+  { id: 'reentry', name: 'Reentry', builtin: true, gate: true, mesh: 'vt',
     params: { waveSpeed: 1.0, refractoryPeriod: 0.45, waveWidth: 0.08, s2Coupling: 0.3, loop: false } },
 ];
 
-const CROSS_TIME = 1.2;            // seconds for the front to cross the mesh at speed 1×
 const SCAR_GRAY = [0.50, 0.50, 0.55];
 
+// Absolute conduction velocities from literature (working myocardium, mm/s). The
+// mesh is in millimetres, so edgeLen(mm) / CV(mm/s) gives the transit time directly.
+//   ventricle ~0.6 m/s  (Kléber & Rudy 2004, Physiol Rev — range 0.5–0.7)
+//   atrium    ~0.8 m/s  (working atrial myocardium, ~0.6–1.0)
+// The AV node (~0.05 m/s) is not a surface path here; its slow conduction is the
+// PR interval, modelled as the fixed AV_NODE_DELAY + HIS_DELAY below. Region tags after preprocessing
+// (see scripts/preprocess_examples.py TEACH_TAGS): 1=LV, 2=RV, 3=LA, 4=RA are the
+// conducting myocardium; 5=aorta, 6=pulmonary artery, 7=pulmonary veins, 8=venae
+// cavae are non-myocardial great vessels shown for teaching — they do not conduct.
+const CV_MM_S = { 1: 600, 2: 600, 3: 800, 4: 800 };
+const NONCONDUCTING_TAGS = new Set([5, 6, 7, 8]);  // great vessels: static anatomy, no wave
+const REF_CV_MM_S = 600;          // reference velocity (ventricle) → baseVelocity scale
+const DEFAULT_CV_MM_S = 600;      // any myocardial region not in the table
+
 // Atrio-ventricular annulus: on the anatomical heart the atria and ventricles are
-// one continuous surface, so a wave crosses the AV groove at full speed anywhere —
-// physiologically wrong. Insulate them (fibrous skeleton) and reconnect a single
-// AV node with the PR-interval delay (see mesh/ConductionGraph.applyAVBlock). Which
-// elemTag regions are atria vs ventricles on this mesh (1≈LV, 2≈RV, 3≈LA, 4≈RA).
+// one continuous epicardial surface, so a wave crosses the AV groove at full speed
+// anywhere — physiologically wrong. Insulate them (fibrous skeleton) and reconnect a
+// single AV node with the PR-interval delay (see mesh/ConductionGraph.applyAVBlock).
 const VENTRICLE_TAGS = new Set([1, 2]);
 const ATRIA_TAGS = new Set([3, 4]);
-const AV_DELAY = 0.30;            // AV-node conduction delay (s) ≈ PR interval
+// Atrium→ventricle timing, split into the slow AV node and the fast His–Purkinje run
+// to the ventricular breakthrough. Sum ≈ 0.16 s → a normal PR interval (120–200 ms).
+const AV_NODE_DELAY = 0.13;       // slow AV-nodal conduction (the bulk of the PR interval)
+const HIS_DELAY = 0.03;           // fast His–Purkinje run to the ventricular breakthrough
 const AV_NODE_RADIUS_FRAC = 0.03; // conducting AV-node patch radius (fraction of mesh diameter)
 
 const REGION_DIM = [0.20, 0.22, 0.27];   // non-isolated regions when one is isolated
@@ -103,6 +118,7 @@ const ecg = new ECGMonitor();
 const helpBar = new HelpBar();
 
 // Active mesh + simulation state.
+let currentExampleKey = null;      // bundled EXAMPLES key in view (null for dropped files)
 let meshGeometry = null;
 let vertexCount = 0;
 let meshScale = 1;                 // mesh diameter, for unit-independent pacing
@@ -142,7 +158,7 @@ const presets = new PresetsPanel({
   mount: scenarioBody,
   builtins: BUILTIN_PRESETS,
   onApply: applyPreset,
-  getCurrent: () => ({ params: panel.state(), gate: reentryActive }),
+  getCurrent: () => ({ params: panel.state(), gate: reentryActive, mesh: currentExampleKey }),
 });
 
 // Mesh section: load button, live stats, and quick example switches.
@@ -227,22 +243,26 @@ async function handleFile(file) {
   const ext = file.name.split('.').pop();
   toast(`Loading ${file.name}…`);
   try {
+    currentExampleKey = null;          // a user-dropped mesh isn't a bundled example
     await renderMesh(await file.arrayBuffer(), ext, file.name);
   } catch (err) {
     fail(err, file.name);
   }
 }
 
-async function loadExample(key = 'heart') {
-  const ex = EXAMPLES[key] || EXAMPLES.heart;
+async function loadExample(key = 'heart', preset = BUILTIN_PRESETS[0]) {
+  const resolved = EXAMPLES[key] ? key : 'heart';
+  const ex = EXAMPLES[resolved];
   toast(`Loading ${ex.label}…`);
   try {
     const res = await fetch(ex.file);
     if (!res.ok) throw new Error(`example mesh not found (${res.status})`);
+    currentExampleKey = resolved;      // set before applyPreset so it won't re-switch meshes
     panel.setColormapValue(ex.view);   // anatomy → Regions; VT → action-potential
     await renderMesh(await res.arrayBuffer(), ex.ext, ex.file, { anatomical: ex.anatomical });
-    // First impression should be alive: auto-fire the Healthy scenario.
-    applyPreset(BUILTIN_PRESETS[0]);
+    // Auto-fire the originating scenario (Healthy on a fresh load, or the preset that
+    // requested this mesh) so the mesh comes up alive.
+    applyPreset(preset);
   } catch (err) {
     fail(err, ex.file);
   }
@@ -308,11 +328,16 @@ async function renderMesh(buffer, ext, name, opts = {}) {
  * (Re)build the conduction graph + excitable medium from the current params.
  * With `gate: true`, install the one-way reentry gate in the scar channel so a
  * single stimulus produces sustained anatomical reentry.
+ *
+ * The AV block is skipped during reentry: it seals the atria off from the ventricles,
+ * which confines the wave to the ventricle and collapses the scar rotor. The VT
+ * scenario is about the ventricular circuit, so we let the wave fill the whole
+ * myocardium (vessels still don't conduct) and the rotor sustains.
  */
 function rebuildMedium({ gate = false } = {}) {
   const velocityFactor = buildVelocityFactor();
   const graph = buildConductionGraph(meshGeometry, velocityFactor);
-  applyAVBlock_(graph);
+  if (!gate) applyAVBlock_(graph);
   if (gate) applyReentryGate(graph);
   medium = new ExcitableMedium({
     graph,
@@ -324,9 +349,10 @@ function rebuildMedium({ gate = false } = {}) {
 }
 
 /**
- * Insulate atria from ventricles (fibrous annulus) and reconnect a single AV node
- * with the PR-interval delay. No-op unless the mesh carries a `region` field with
- * both atrial and ventricular tags (i.e. the anatomical heart).
+ * Insulate atria from ventricles (fibrous annulus) and reconnect the AV node through
+ * the His bundle to the septal-apical ventricular breakthroughs (so the ventricles
+ * activate apex→base). No-op unless the mesh carries a `region` field with both atrial
+ * and ventricular tags (i.e. the anatomical heart).
  */
 function applyAVBlock_(graph) {
   const region = pointData.region;
@@ -334,7 +360,45 @@ function applyAVBlock_(graph) {
   const isAtrial = (v) => ATRIA_TAGS.has(region[v] | 0);
   const isVentricular = (v) => VENTRICLE_TAGS.has(region[v] | 0);
   const positions = meshGeometry.getAttribute('position').array;
-  applyAVBlock(graph, positions, isAtrial, isVentricular, AV_DELAY, meshScale * AV_NODE_RADIUS_FRAC);
+  applyAVBlock(graph, positions, isAtrial, isVentricular, AV_NODE_DELAY + HIS_DELAY,
+    meshScale * AV_NODE_RADIUS_FRAC, ventricularBreakthroughs());
+}
+
+/**
+ * The two His–Purkinje breakthrough vertices — where the left and right bundle branches
+ * deliver the impulse to the ventricular myocardium. Physiologically the earliest
+ * ventricular activation is at the septal endocardium, apical half: so target the
+ * midpoint of the LV(1)/RV(2) centroids (the septum) at an apical height, and return the
+ * nearest LV vertex and nearest RV vertex to it. Null when the mesh has no ventricles.
+ */
+function ventricularBreakthroughs() {
+  const region = pointData.region;
+  const p = meshGeometry?.getAttribute('position');
+  if (!region || !p) return undefined;
+  let lx = 0, ly = 0, lz = 0, lc = 0, rx = 0, ry = 0, rz = 0, rc = 0;
+  let yLo = Infinity, yHi = -Infinity;
+  for (let v = 0; v < p.count; v++) {
+    const tag = region[v] | 0;
+    if (tag === 1) { lx += p.getX(v); ly += p.getY(v); lz += p.getZ(v); lc++; }
+    else if (tag === 2) { rx += p.getX(v); ry += p.getY(v); rz += p.getZ(v); rc++; }
+    else continue;
+    const y = p.getY(v); if (y < yLo) yLo = y; if (y > yHi) yHi = y;
+  }
+  if (!lc || !rc) return undefined;
+  // Septal-apical target: midpoint of the ventricular centroids (x,z) at apical height.
+  const tx = (lx / lc + rx / rc) / 2, tz = (lz / lc + rz / rc) / 2;
+  const ty = yLo + 0.22 * (yHi - yLo);
+  const nearest = (tag) => {
+    let best = -1, bd = Infinity;
+    for (let v = 0; v < p.count; v++) {
+      if ((region[v] | 0) !== tag) continue;
+      const dx = p.getX(v) - tx, dy = p.getY(v) - ty, dz = p.getZ(v) - tz;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bd) { bd = d; best = v; }
+    }
+    return best;
+  };
+  return [nearest(1), nearest(2)];
 }
 
 /** Install the validated one-way gate at the mesh's `gate` marker. */
@@ -373,16 +437,28 @@ function markerVertex(name) {
 }
 
 function baseVelocity() {
-  return (meshScale / CROSS_TIME) * params.waveSpeed;
+  // Absolute reference velocity (mm/s); the region CV ratio rides in edgeFactor.
+  // `waveSpeed` is now a physiological CV multiplier (1.0 = literature values).
+  return REF_CV_MM_S * params.waveSpeed;
 }
 
-/** Per-vertex conduction factor in [0,1] from the mesh's fibrosis field (scar
- *  slows/blocks conduction). Null when the mesh has no fibrosis field. */
+/** Per-vertex conduction factor = regional CV (relative to the ventricular
+ *  reference) attenuated by fibrosis. edgeFactor scales baseVelocity, so a factor
+ *  of 1 conducts at REF_CV_MM_S, atrium (>1) faster, fibrotic scar slower, 0 blocks.
+ *  Null only when the mesh carries neither a region nor a fibrosis field (synthetic
+ *  fixtures), so baseVelocity alone drives them. */
 function buildVelocityFactor() {
-  const field = pointData.fibrosis || null;
-  if (!field) return null;
+  const region = pointData.region || null;
+  const fib = pointData.fibrosis || null;
+  if (!region && !fib) return null;
   const f = new Float32Array(vertexCount);
-  for (let v = 0; v < vertexCount; v++) f[v] = Math.max(0, Math.min(1, 1 - field[v]));
+  for (let v = 0; v < vertexCount; v++) {
+    const tag = region ? region[v] | 0 : 0;
+    if (region && NONCONDUCTING_TAGS.has(tag)) { f[v] = 0; continue; }  // great vessels block
+    const cv = region ? (CV_MM_S[tag] ?? DEFAULT_CV_MM_S) : REF_CV_MM_S;
+    const scar = fib ? Math.max(0, 1 - fib[v]) : 1;
+    f[v] = (cv / REF_CV_MM_S) * scar;
+  }
   return f;
 }
 
@@ -692,6 +768,20 @@ function onParams(state) {
  */
 function applyPreset(preset) {
   if (!preset || !medium) return;
+
+  // A preset can be bound to a bundled example mesh. Resolve which mesh it needs, then
+  // switch (and re-apply this preset once the mesh loads) if it isn't already active.
+  let need = null;
+  if (preset.gate && !pointData.fibrosis) {
+    need = 'vt';                                          // reentry must have the substrate
+  } else if (preset.mesh && EXAMPLES[preset.mesh] && currentExampleKey !== null) {
+    need = preset.mesh;                                   // pair bundled meshes, but never
+  }                                                       // yank a user-dropped mesh
+  if (need && need !== currentExampleKey) {
+    loadExample(need, preset);
+    return;
+  }
+
   if (preset.params) panel.setState(preset.params);   // writes sliders + fires onParams
 
   simTime = 0;

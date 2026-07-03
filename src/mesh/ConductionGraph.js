@@ -143,15 +143,26 @@ export function applyOneWayGate(graph, positions, gateXyz, scarCenter, radius, s
  * — it cannot climb back into the atria — while an atrial wave still crosses to the
  * ventricles after the delay. Mutates the graph.
  *
+ * **His–Purkinje breakthrough (`breakthroughs` given):** the AV node sits at the
+ * base, but the ventricles physiologically break through first at the septal-apical
+ * endocardium (the bundle-branch terminals), depolarising apex→base. So instead of a
+ * local basal bridge, block *every* watershed crossing (complete annulus) and install
+ * directed conduction paths (`graph.conductionPaths`) from the AV node's atrial vertex
+ * to each ventricular breakthrough, each carrying `avDelay`. The engine
+ * ({@link import('../wave/ExcitableMedium.js').ExcitableMedium}) fires those distant
+ * sites when the node activates — one-way, so no retrograde conduction.
+ *
  * @param {object} graph        from {@link buildConductionGraph} (needs edgeDelay)
  * @param {ArrayLike<number>} positions  xyz per vertex (3 each)
  * @param {(v:number)=>boolean} isAtrial      vertex belongs to an atrium
  * @param {(v:number)=>boolean} isVentricular vertex belongs to a ventricle
- * @param {number} avDelay      AV-node conduction delay (seconds)
+ * @param {number} avDelay      AV-node → ventricle conduction delay (seconds)
  * @param {number} nodeRadius   radius of the conducting AV-node patch (mesh units)
+ * @param {number[]} [breakthroughs]  ventricular vertices to deliver the impulse to via
+ *   the His bundle; when given, replaces the basal bridge with `graph.conductionPaths`
  * @returns {{ blocked: number, bridged: number, nodeXyz: number[]|null }}
  */
-export function applyAVBlock(graph, positions, isAtrial, isVentricular, avDelay, nodeRadius) {
+export function applyAVBlock(graph, positions, isAtrial, isVentricular, avDelay, nodeRadius, breakthroughs) {
   const { offsets, neighbors, edgeFactor, edgeDelay, vertexCount } = graph;
   const px = (v) => positions[3 * v], py = (v) => positions[3 * v + 1], pz = (v) => positions[3 * v + 2];
 
@@ -177,7 +188,7 @@ export function applyAVBlock(graph, positions, isAtrial, isVentricular, avDelay,
 
   // Collect every edge across the watershed (both sides set and differing), with
   // its midpoint. Flag the direct atrium↔ventricle contacts as AV-node candidates.
-  const cross = [];               // { e, mx, my, mz, contact }
+  const cross = [];               // { e, a, b, mx, my, mz, contact, antegrade }
   let sx = 0, sy = 0, sz = 0, nContacts = 0;
   for (let a = 0; a < vertexCount; a++) {
     if (side[a] === UNSET) continue;
@@ -187,7 +198,7 @@ export function applyAVBlock(graph, positions, isAtrial, isVentricular, avDelay,
       const mx = (px(a) + px(b)) / 2, my = (py(a) + py(b)) / 2, mz = (pz(a) + pz(b)) / 2;
       const contact = (isAtrial(a) && isVentricular(b)) || (isVentricular(a) && isAtrial(b));
       const antegrade = side[a] === ATRIAL; // directed a→b: atria → ventricles
-      cross.push({ e, mx, my, mz, contact, antegrade });
+      cross.push({ e, a, b, mx, my, mz, contact, antegrade });
       if (contact) { sx += mx; sy += my; sz += mz; nContacts++; }
     }
   }
@@ -202,6 +213,17 @@ export function applyAVBlock(graph, positions, isAtrial, isVentricular, avDelay,
     if (nContacts && !c.contact) continue;
     const d2 = (c.mx - cx) ** 2 + (c.my - cy) ** 2 + (c.mz - cz) ** 2;
     if (d2 < nodeD2) { nodeD2 = d2; node = c; }
+  }
+
+  // His–Purkinje mode: seal the whole annulus and deliver the impulse from the AV
+  // node's atrial vertex to each ventricular breakthrough via a directed path, so the
+  // ventricles start at the septal-apical endocardium (apex→base), not at the base.
+  if (breakthroughs && breakthroughs.length) {
+    let blocked = 0;
+    for (const c of cross) { edgeFactor[c.e] = 0; blocked++; }
+    const hisSource = side[node.a] === ATRIAL ? node.a : node.b;
+    graph.conductionPaths = breakthroughs.map((to) => ({ from: hisSource, to, delay: avDelay }));
+    return { blocked, bridged: graph.conductionPaths.length, nodeXyz: [node.mx, node.my, node.mz] };
   }
 
   const r2 = nodeRadius * nodeRadius;

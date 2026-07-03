@@ -11,9 +11,12 @@ import { HEART_ANATOMICAL_MATRIX } from '../../src/mesh/TorsoFit.js';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
-// Gate parameters — must match src/main.js (GATE_RADIUS_FRAC / GATE_SIGN).
+// Model parameters — must match src/main.js.
 const GATE_RADIUS_FRAC = 0.15;
 const GATE_SIGN = 1;
+const REF_CV_MM_S = 600;
+const CV_MM_S = { 1: 600, 2: 600, 3: 800, 4: 800 };
+const NONCONDUCTING_TAGS = new Set([5, 6, 7, 8]);
 
 describe('one-way gate', () => {
   it('makes a directed edge conduct one way only', () => {
@@ -59,8 +62,11 @@ describe('one-way gate', () => {
     const normals = geometry.getAttribute('normal').array;
     const vertexCount = geometry.getAttribute('position').count;
     const meshScale = meshScaleOf(positions, vertexCount);
-    const baseVelocity = (meshScale / 1.2) * 1.0;
-    const vf = velocityFactor(pointData.fibrosis, vertexCount);
+    // Build the medium exactly as the app's Reentry preset does: absolute conduction
+    // velocity (mm/s), non-conducting great vessels, per-region CV × (1 − fibrosis), and
+    // NO AV block (the reentry scenario skips it — see main.js rebuildMedium).
+    const baseVelocity = REF_CV_MM_S * 1.0;
+    const vf = velocityFactor(pointData.region, pointData.fibrosis, vertexCount);
 
     const gateV = markerVertex(pointData.gate);
     const s1 = markerVertex(pointData.reentry_s1);
@@ -97,9 +103,13 @@ function markerVertex(field) {
   for (let v = 0; v < field.length; v++) if (field[v] > val) { val = field[v]; best = v; }
   return best;
 }
-function velocityFactor(fib, n) {
+function velocityFactor(region, fib, n) {
   const f = new Float32Array(n);
-  for (let v = 0; v < n; v++) f[v] = Math.max(0, Math.min(1, 1 - fib[v]));
+  for (let v = 0; v < n; v++) {
+    const tag = region[v] | 0;
+    if (NONCONDUCTING_TAGS.has(tag)) { f[v] = 0; continue; }   // great vessels block
+    f[v] = ((CV_MM_S[tag] ?? REF_CV_MM_S) / REF_CV_MM_S) * Math.max(0, 1 - fib[v]);
+  }
   return f;
 }
 function scarCentroid(p, n, fib) {

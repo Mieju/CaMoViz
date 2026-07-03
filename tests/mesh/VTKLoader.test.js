@@ -71,16 +71,17 @@ describe('VTKLoader.loadFromArrayBuffer', () => {
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
     const { geometry, pointData } = await loadFromArrayBuffer(ab, 'vtu');
 
-    // Counts reflect the shipped surface after preprocessing drops the aorta
-    // (elemTag 5) — see scripts/preprocess_examples.py DROP_REGIONS.
+    // Counts reflect the shipped surface after preprocessing keeps the outer shell
+    // with the great vessels, morphologically closes their hollow lumens and smooths
+    // it, consolidating tags to a teaching palette (see scripts/preprocess_examples.py).
     const verts = geometry.getAttribute('position').count;
-    expect(verts).toBe(64708);
-    expect(geometry.getIndex().count).toBe(128936 * 3);
+    expect(verts).toBe(45002);
+    expect(geometry.getIndex().count).toBe(90000 * 3);
     // Anatomical element tags carried through as a per-point `region` field.
     expect(pointData.region).toBeInstanceOf(Float32Array);
     expect(pointData.region.length).toBe(verts);
     const tags = new Set(Array.from(pointData.region, (r) => Math.round(r)));
-    expect(tags.size).toBe(23);          // 24 original regions minus the aorta
-    expect(tags.has(5)).toBe(false);     // aorta fully excised
+    // 1–4 chambers + 5 aorta, 6 pulmonary artery, 7 pulmonary veins, 8 venae cavae.
+    expect([...tags].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 });

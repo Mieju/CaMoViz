@@ -5,9 +5,12 @@
  * persist in localStorage so they survive a reload. Applying a preset is
  * delegated to the app via `onApply(preset)`.
  *
- * A preset is: { id, name, builtin, gate, params:{…panel state…} }.
+ * A preset is: { id, name, builtin, gate, mesh:'heart'|'vt'|null, params:{…panel state…} }.
+ * `mesh` records which bundled example was active when the preset was saved, so applying
+ * it restores that mesh (see main.js applyPreset).
  */
 const LS_KEY = 'cwv-custom-presets';
+const MESH_LABELS = { heart: 'Anatomy', vt: 'VT' };
 
 export class PresetsPanel {
   /**
@@ -35,7 +38,7 @@ export class PresetsPanel {
     const name = (prompt('Name this configuration preset:', `Preset ${this.custom.length + 1}`) || '').trim();
     if (!name) return;
     const cur = this.getCurrent ? this.getCurrent() : {};
-    this.custom.push({ id: `c${Date.now()}`, name, builtin: false, gate: !!cur.gate, params: cur.params });
+    this.custom.push({ id: `c${Date.now()}`, name, builtin: false, gate: !!cur.gate, mesh: cur.mesh ?? null, params: cur.params });
     this._persist();
     this._render();
   }
@@ -75,11 +78,14 @@ export class PresetsPanel {
     apply.type = 'button';
     apply.className = 'pw-apply';
     apply.textContent = preset.name;
-    if (preset.gate) {
+    const meshLabel = MESH_LABELS[preset.mesh];
+    if (meshLabel) {
       const tag = document.createElement('span');
       tag.className = 'pw-tag';
-      tag.textContent = 'VT';
-      tag.title = 'Installs the one-way reentry gate';
+      tag.textContent = meshLabel;
+      tag.title = preset.gate
+        ? 'Loads the VT substrate mesh and installs the one-way reentry gate'
+        : `Loads the ${meshLabel} mesh`;
       apply.appendChild(tag);
     }
     apply.addEventListener('click', () => this.onApply && this.onApply(preset));
